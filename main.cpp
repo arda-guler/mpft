@@ -266,8 +266,25 @@ std::string trim(const std::string& str) // trim trailing/leading whitespace, no
 }
 
 // this is the fun and simpler part of the equation
-std::vector<double> stateVector2Kepler(Vec3 r, Vec3 v, double mu = 1.3271244004193938E+11)
+std::vector<double> stateVector2Kepler(Vec3 r_equ, Vec3 v_equ, SpiceDouble et, double mu = 1.3271244004193938E+11)
 {
+    // convert from equatorial to ecliptic frame
+    double rot[3][3];
+    pxform_c("J2000", "ECLIPJ2000", et, rot);
+
+    double r_equ_arr[3] = { r_equ.x, r_equ.y, r_equ.z };
+    double v_equ_arr[3] = { v_equ.x, v_equ.y, v_equ.z };
+
+    double r_arr[3] = { 0, 0, 0 };
+    double v_arr[3] = { 0, 0, 0 };
+
+    mxv_c(rot, r_equ_arr, r_arr);
+    mxv_c(rot, v_equ_arr, v_arr);
+
+    Vec3 r = Vec3(r_arr[0], r_arr[1], r_arr[2]);
+    Vec3 v = Vec3(v_arr[0], v_arr[1], v_arr[2]);
+
+    // now calculate orbital params
     double r_mag = r.mag();
     double v_mag = v.mag();
 
@@ -370,43 +387,6 @@ std::vector<double> stateVector2Kepler(Vec3 r, Vec3 v, double mu = 1.32712440041
 
 }
 
-/*
-std::vector<std::complex<double>> solvePolynomial(const std::vector<double>& coefficients) {
-    int degree = coefficients.size() - 1;
-
-    if (degree < 1 || coefficients[0] == 0.0) {
-        return {};
-    }
-
-    // Normalize coefficients to make polynomial monic
-    std::vector<double> normalized_coeffs(degree + 1);
-    double leading = coefficients[0];
-    for (int i = 0; i <= degree; ++i) {
-        normalized_coeffs[i] = coefficients[i] / leading;
-    }
-
-    // Build companion matrix
-    Eigen::MatrixXd companion = Eigen::MatrixXd::Zero(degree, degree);
-    for (int i = 1; i < degree; ++i) {
-        companion(i - 1, i) = 1.0;  // subdiagonal
-    }
-
-    for (int i = 0; i < degree; ++i) {
-        companion(degree - 1, i) = -normalized_coeffs[i + 1];
-    }
-
-    Eigen::EigenSolver<Eigen::MatrixXd> solver(companion);
-    Eigen::VectorXcd eigenvalues = solver.eigenvalues();
-
-    std::vector<std::complex<double>> roots(degree);
-    for (int i = 0; i < degree; ++i) {
-        roots[i] = eigenvalues[i];
-    }
-
-    return roots;
-}
-*/
-
 std::vector<double> cartezian2spherical (Vec3 v)
 {
     double d = v.mag();
@@ -424,7 +404,17 @@ std::vector<double> cartezian2spherical (Vec3 v)
 // I could've made a KeplerOrbit class or whatever but this works too
 void printOrbitalElements(std::vector<double> orbel)
 {
-    std::cout << "a: " << orbel[0] / AU << " e: " << orbel[1] << " i: " << orbel[2] << " Node: " << orbel[3] << " Peri: " << orbel[4] << " M: " << orbel[5] << "\n";
+    std::cout << "a: " << orbel[0] / AU << " e: " << orbel[1] << " i: " << orbel[2] << " Node: " << orbel[3] << " Peri: " << orbel[4] << " M: " << orbel[6] << "\n";
+}
+
+double etToJD(SpiceDouble et)
+{
+    return 2451545.0 + et / 86400.0;
+}
+
+SpiceDouble JDToEt(double JD)
+{
+    return (JD - 2451545.0) * 86400.0;
 }
 // --- --- --- MISC UTILS --- --- --- [END]
 
@@ -857,7 +847,7 @@ std::vector<Vec3> determineOrbit(std::vector<Observation> obs_all, std::unordere
     Vec3 p0 = getObserverPos(obscode_map[o1.obs_code], o1.et) + Vec3(o1.RA, o1.DEC) * best_R;
     Vec3 v0 = guessCircularV0(p0, obs_all, obscode_map);
 
-    std::vector<double> orbital_elems_init = stateVector2Kepler(p0, v0);
+    std::vector<double> orbital_elems_init = stateVector2Kepler(p0, v0, o1.et);
     std::cout << "Initial guess:\n";
     printOrbitalElements(orbital_elems_init);
     std::cout << "Initial pos. [km]  : "; p0.printout();
@@ -959,6 +949,15 @@ std::vector<Vec3> determineOrbit(std::vector<Observation> obs_all, std::unordere
 
     std::cout << "\nDone iterating.\n";
     return std::vector<Vec3> {p0, v0};
+}
+
+std::pair<std::vector<Vec3>, double> propagateToNextMidnight(Vec3 p0, Vec3 v0, SpiceDouble t0)
+{
+    double JD_0 = etToJD(t0);
+    double JD_1 = std::floor(JD_0) + 0.5 + std::ceil(JD_0 - std::floor(JD_0 + 0.5)); // go to next mindight
+    SpiceDouble t1 = JDToEt(JD_1);
+
+    return { propagate(p0, v0, t0, t1, -1), JD_1 };
 }
 
 void printHelpMsg()
@@ -1083,18 +1082,32 @@ int main(int argc, char *argv[])
     Vec3 p0 = state_vec[0];
     Vec3 v0 = state_vec[1];
 
+    // propagate the solution to a nearby midnight so that we have a good epoch
+    std::pair<std::vector<Vec3>, double> final_solution = propagateToNextMidnight(p0, v0, observations[0].et);
+    Vec3 p0_final = final_solution.first[0];
+    Vec3 v0_final = final_solution.first[1];
+    double epoch_JD = final_solution.second;
+
     // post-processing equivalent of an orbit fit problem
     std::cout << "Calculating final orbital parameters...\n";
-    std::vector<double> orbital_elements = stateVector2Kepler(p0, v0);
-
-    double epoch_JD = 2451545.0 + observations[0].et / 86400.0;;
+    std::vector<double> orbital_elements = stateVector2Kepler(p0_final, v0_final, JDToEt(epoch_JD));
+    // orbital_elements = {sma, eccentricity, inclination, omega, arg_periapsis, true_anomaly, mean_anomaly}
+    // sma in km, angles in degrees
     
-    std::cout << "Final orbital elements:\n\n";
+    // 1.3271244004193938E+11 = Sun GM
+    double orbital_period = 2 * pi_c() * sqrt(orbital_elements[0] * orbital_elements[0] * orbital_elements[0] / 1.3271244004193938E+11);
+    double orbit_traverse_fraction = orbital_elements[6] / 360;
+
+    double periapsis_JD = epoch_JD - orbit_traverse_fraction * orbital_period / 86400.0;
+
+    std::cout << "\nFinal orbital elements:\n\n";
     std::cout << "Epoch: ";
-    std::cout << std::fixed << std::setprecision(6) << epoch_JD << " JD" << std::endl;
+    std::cout << std::fixed << std::setprecision(1) << epoch_JD << " JD" << std::endl;
+    std::cout << "Time of Perihelion: ";
+    std::cout << std::fixed << std::setprecision(6) << periapsis_JD << " JD" << std::endl;
     printOrbitalElements(orbital_elements);
-    std::cout << "Epoch pos. [km]  : "; p0.printout();
-    std::cout << "Epoch vel. [km/s]: "; v0.printout();
+    std::cout << "Epoch pos. [km]  : "; p0_final.printout();
+    std::cout << "Epoch vel. [km/s]: "; v0_final.printout();
 
     std::cout << "\nMPFT: Program end.\n";
 }
