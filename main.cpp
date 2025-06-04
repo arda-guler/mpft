@@ -9,8 +9,6 @@
 #include <unordered_map>
 #include <algorithm>
 
-// #include "Eigen/Dense"
-
 extern "C" 
 {
     #include "SpiceUsr.h"
@@ -733,87 +731,89 @@ std::vector<Vec3> propagate(Vec3 p0, Vec3 v0, SpiceDouble date_init, SpiceDouble
 }
 // --- --- --- ORBIT PROPAGATION --- --- --- [END]
 
-/*
-std::vector<double> get_rho2s(Observation o1, Observation o2, Observation o3,
-    std::unordered_map<std::string, Observatory> &obscode_map)
+// this guesses an initial velocity assuming observations 1 and 2 are the same distance from the Solar System Barycenter
+Vec3 guessCircularV0(Vec3 p0, std::vector<Observation> obs_all, std::unordered_map<std::string, Observatory>& obscode_map)
 {
-    double mu = 1.3271244004193938E+11;
+    double r = p0.mag();
+    Observation o1 = obs_all[1];
 
-    Vec3 rhat_1 = Vec3(o1.RA, o1.DEC);
-    Vec3 rhat_2 = Vec3(o2.RA, o2.DEC);
-    Vec3 rhat_3 = Vec3(o3.RA, o3.DEC);
+    // We know the heliocentric distance because we already have p0 located. We also know the 
+    // direction of the object from the observer. We also know the position of the observer.
+    // Using these, locate the object in heliocentric space.
 
-    Vec3 R_1 = getObserverPos(obscode_map[o1.obs_code], o1.et);
-    Vec3 R_2 = getObserverPos(obscode_map[o2.obs_code], o2.et);
-    Vec3 R_3 = getObserverPos(obscode_map[o3.obs_code], o3.et);
+    // Fixing the distance from SSB gives us a spherical surface.
+    // Fixing the direction gives us a semi-infinite line segment.
+    // Their intersection should be the object location.
+    // 
+    // See https://en.wikipedia.org/wiki/Line%E2%80%93sphere_intersection
+    //
+    // Now we find d.
 
-    double t3mt1 = o3.et - o1.et;
-    Vec3 rhatprime_2 = (rhat_3 - rhat_1) / t3mt1;
-    Vec3 rhatprimeprime_2 = (rhat_3 - rhat_2 * 2 + rhat_1) / (t3mt1 * t3mt1);
+    Vec3 u = Vec3(o1.RA, o1.DEC);
+    Vec3 o = getObserverPos(obscode_map[o1.obs_code], o1.et);
 
-    double tau_1 = o1.et - o2.et;
-    double tau_3 = o3.et - o2.et;
-    double tau = o3.et - o1.et;
+    double u_dot_oc = u.dot(o);
+    double o_mag = o.mag();
 
-    Vec3 p_1 = rhat_2.cross(rhat_3);
-    Vec3 p_2 = rhat_1.cross(rhat_3);
-    Vec3 p_3 = rhat_1.cross(rhat_2);
+    double disc = u_dot_oc * u_dot_oc - (o_mag * o_mag - r * r);
+    double d_1 = -u_dot_oc + sqrt(disc);
+    double d_2 = -u_dot_oc - sqrt(disc);
 
-    double D_0 = rhat_1.dot(p_1);
-    double D_11 = R_1.dot(p_1);
-    double D_12 = R_1.dot(p_2);
-    double D_13 = R_1.dot(p_3);
-    double D_21 = R_2.dot(p_1);
-    double D_22 = R_2.dot(p_2);
-    double D_23 = R_2.dot(p_3);
-    double D_31 = R_3.dot(p_1);
-    double D_32 = R_3.dot(p_2);
-    double D_33 = R_3.dot(p_3);
+    double d = d_1;
 
-    double A = 1 / D_0 * (-D_12 * tau_3 / tau + D_22 + D_32 * tau_1 / tau);
-    double B = 1 / (6 * D_0) * (D_12 * (tau_3 * tau_3 - tau * tau) * tau_3 / tau + D_32 * (tau * tau - tau_1 * tau_1) * tau_1 / tau);
-    double E = R_2.dot(rhat_2);
-
-    double R_2sq = R_2.dot(R_2);
-
-    double a = -(A * A + 2 * A * E + R_2sq);
-    double b = -2 * mu * B * (A + E);
-    double c = -mu * mu * B * B;
-
-    std::vector<double> coeffs = { 1, 0, a, 0, 0, b, 0, 0, c };
-
-    std::cout << "COEFFS: ";
-    for (int aa = 0; aa < coeffs.size(); aa++)
+    if (d_1 < 0)
     {
-        std::cout << coeffs[aa] << " ";
-    }
-    std::cout << "\n";
-
-    std::vector<std::complex<double>> rho_2s = solvePolynomial(coeffs);
-
-    std::cout << "RHO: ";
-    for (int aa = 0; aa < rho_2s.size(); aa++)
-    {
-        std::cout << rho_2s[aa] << " ";
-    }
-    std::cout << "\n";
-
-    std::vector<double> rho_2s_sanitized = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
-    for (int i = 0; i < rho_2s.size(); i++)
-    {
-        rho_2s_sanitized[i] = abs(rho_2s[i].real());
+        d = d_2;
     }
 
-    return rho_2s_sanitized;
+    Vec3 p1 = o + u * d; // assumed position at second observation
+
+    // now we find velocity
+    // Bill Gray (author of find_orb and astcheck) has a good explanation for what I'm doing so I won't bother repeating here
+    // https://www.projectpluto.com/herget.htm
+    Vec3 p_mid = (p0 + p1) * 0.5;
+
+    // get an acceleration guess at midpoint
+    double mu = 1.3271244004193938E+11; // Sun standrad gravitational parameter
+    Vec3 a_mid = p_mid.normalized() * (- mu) / (r * r);
+
+    // time it takes to go from observation 1 to 2
+    double t_diff = o1.et - obs_all[0].et;
+
+    Vec3 v0 = (p1 - p0) / t_diff - a_mid * t_diff / 2;
+    return v0;
 }
-*/
+
+// gets observations and state vectors, returns RA-DEC error score
+double getErrorRADEC(Vec3 p0, Vec3 v0, std::vector<Observation> obs_all, std::unordered_map<std::string, Observatory>& obscode_map)
+{
+    Observation o1 = obs_all[0];
+
+    double err_val = 0;
+    for (int idx_o = 0; idx_o < obs_all.size(); idx_o++)
+    {
+        Observation o = obs_all[idx_o];
+
+        std::vector<Vec3> prop_res = propagate(p0, v0, o1.et, o.et, -1);
+        Vec3 p_check = prop_res[0];
+        std::vector<double> RADEC_prop = getRADEC(o.et, obscode_map[o.obs_code], p_check);
+
+        double RA_prop = RADEC_prop[0];
+        double DEC_prop = RADEC_prop[1];
+
+        double RA_err = o.RA - RA_prop;
+        double DEC_err = o.DEC - DEC_prop;
+
+        err_val += sqrt(RA_err * RA_err + DEC_err * DEC_err);
+    }
+
+    return err_val;
+}
 
 // the actual orbit determination algorithm
 std::vector<Vec3> determineOrbit(std::vector<Observation> obs_all, std::unordered_map<std::string, Observatory>& obscode_map,
-    double R1, double deltaR)
+    double R1, int maxiter)
 {
-    double mu = 1.3271244004193938E+11;
-
     std::cout << "Orbit determination...\n";
 
     Observation o1 = obs_all[0];
@@ -824,50 +824,56 @@ std::vector<Vec3> determineOrbit(std::vector<Observation> obs_all, std::unordere
     SpiceDouble date_final = o2.et;
     SpiceDouble date_check = o3.et;
 
-    // std::vector<double> rho_2s = get_rho2s(o1, o2, o3, obscode_map);
-    
-    // double R1 = 3 * AU; // *std::max_element(rho_2s.begin(), rho_2s.end());
-    // double deltaR = 0;
-    double R2 = R1 + deltaR;
+    double best_R = 2.0 * AU; // default-ish value
+    if (R1 < 0)
+    {
+        // test for best fitting observer - object distance
+        double R1_ts[15] = { 0.1 * AU, 0.2 * AU, 0.3 * AU, 0.5 * AU, 0.75 * AU, 1 * AU,
+                            1.25 * AU, 1.5 * AU, 2 * AU, 2.5 * AU, 3 * AU, 3.5 * AU, 4 * AU,
+                            5 * AU, 6 * AU };
+        double R_err_prev = 1E+15; // arbitrary large number
+        
+        for (int idx_Rt = 0; idx_Rt < 15; idx_Rt++)
+        {
+            double R1_t = R1_ts[idx_Rt];
+            Vec3 p0 = getObserverPos(obscode_map[o1.obs_code], o1.et) + Vec3(o1.RA, o1.DEC) * R1_t;
+            Vec3 v0 = guessCircularV0(p0, obs_all, obscode_map);
 
-    Vec3 p0 = getObserverPos(obscode_map[o1.obs_code], o1.et) + Vec3(o1.RA, o1.DEC) * R1;
-    Vec3 pf = getObserverPos(obscode_map[o2.obs_code], o2.et) + Vec3(o2.RA, o2.DEC) * R2;
+            // check current error
+            double err_val = getErrorRADEC(p0, v0, obs_all, obscode_map);
 
-    Vec3 v0 = Vec3(-p0.y / p0.mag(), p0.x / p0.mag(), 0) * sqrt(mu / p0.mag());
+            if (err_val < R_err_prev)
+            {
+                best_R = R1_t;
+                R_err_prev = err_val;
+            }
+        }
+    }
+    else
+    {
+        best_R = R1;
+    }
+
+    Vec3 p0 = getObserverPos(obscode_map[o1.obs_code], o1.et) + Vec3(o1.RA, o1.DEC) * best_R;
+    Vec3 v0 = guessCircularV0(p0, obs_all, obscode_map);
 
     std::vector<double> orbital_elems_init = stateVector2Kepler(p0, v0);
     std::cout << "Initial guess:\n";
     printOrbitalElements(orbital_elems_init);
-    std::cout << "\nBeginning iterations...\n";
+    std::cout << "Initial pos. [km]  : "; p0.printout();
+    std::cout << "Initial vel. [km/s]: "; v0.printout();
+    std::cout << "\nIterating to refine solution";
 
     double adjust_factor = 1;
     double adjust_pfactor = 1;
 
     bool good_fit = false;
     int retry_count = 0;
-    int MAX_RETRY = 100;
+    int MAX_RETRY = maxiter;
     while (!good_fit && retry_count <= MAX_RETRY)
     {
         // check current error
-        double err_val = 0;
-        for (int idx_o = 0; idx_o < obs_all.size(); idx_o++)
-        {
-            Observation o = obs_all[idx_o];
-
-            // p0.printout();
-
-            std::vector<Vec3> prop_res = propagate(p0, v0, o1.et, o.et, -1);
-            Vec3 p_check = prop_res[0];
-            std::vector<double> RADEC_prop = getRADEC(o.et, obscode_map[o.obs_code], p_check);
-
-            double RA_prop = RADEC_prop[0];
-            double DEC_prop = RADEC_prop[1];
-
-            double RA_err = o.RA - RA_prop;
-            double DEC_err = o.DEC - DEC_prop;
-
-            err_val += sqrt(RA_err * RA_err + DEC_err * DEC_err);
-        }
+        double err_val = getErrorRADEC(p0, v0, obs_all, obscode_map);
 
         // adjust p0, v0
         if (err_val < 10 / 3600)
@@ -896,26 +902,7 @@ std::vector<Vec3> determineOrbit(std::vector<Observation> obs_all, std::unordere
             for (int idx_dir = 0; idx_dir < 6; idx_dir++)
             {
                 Vec3 v0_1 = v0 + adjust_vecs[idx_dir];
-
-                adjust_vals[idx_dir] = 0;
-                for (int idx_oj = 0; idx_oj < obs_all.size(); idx_oj++)
-                {
-                    Observation oj = obs_all[idx_oj];
-                    if (oj.et != date_init)
-                    {
-                        std::vector<Vec3> prop_res = propagate(p0, v0_1, o1.et, oj.et, -1);
-                        Vec3 p_check = prop_res[0];
-                        std::vector<double> RADEC_prop_1 = getRADEC(oj.et, obscode_map[oj.obs_code], p_check);
-
-                        double RA_prop_1 = RADEC_prop_1[0];
-                        double DEC_prop_1 = RADEC_prop_1[1];
-
-                        double RA_err_1 = oj.RA - RA_prop_1;
-                        double DEC_err_1 = oj.DEC - DEC_prop_1;
-
-                        adjust_vals[idx_dir] += sqrt(RA_err_1 * RA_err_1 + DEC_err_1 * DEC_err_1);
-                    }
-                }
+                adjust_vals[idx_dir] = getErrorRADEC(p0, v0_1, obs_all, obscode_map);
             }
 
             std::vector<double>::iterator it = std::min_element(adjust_vals.begin(), adjust_vals.end());
@@ -950,26 +937,7 @@ std::vector<Vec3> determineOrbit(std::vector<Observation> obs_all, std::unordere
             for (int idx_pdir = 0; idx_pdir < 6; idx_pdir++)
             {
                 Vec3 p0_1 = p0 + adjust_pvecs[idx_pdir];
-
-                adjust_pvals[idx_pdir] = 0;
-                for (int idx_ok = 0; idx_ok < obs_all.size(); idx_ok++)
-                {
-                    Observation ok = obs_all[idx_ok];
-                    if (ok.et != date_init)
-                    {
-                        std::vector<Vec3> prop_res = propagate(p0_1, v0, o1.et, ok.et, -1);
-                        Vec3 p_check = prop_res[0];
-                        std::vector<double> RADEC_prop_2 = getRADEC(ok.et, obscode_map[ok.obs_code], p_check);
-
-                        double RA_prop_2 = RADEC_prop_2[0];
-                        double DEC_prop_2 = RADEC_prop_2[1];
-
-                        double RA_err_2 = ok.RA - RA_prop_2;
-                        double DEC_err_2 = ok.DEC - DEC_prop_2;
-
-                        adjust_pvals[idx_pdir] += sqrt(RA_err_2 * RA_err_2 + DEC_err_2 * DEC_err_2);
-                    }
-                }
+                adjust_pvals[idx_pdir] = getErrorRADEC(p0_1, v0, obs_all, obscode_map);
             }
 
             std::vector<double>::iterator pit = std::min_element(adjust_pvals.begin(), adjust_pvals.end());
@@ -986,9 +954,10 @@ std::vector<Vec3> determineOrbit(std::vector<Observation> obs_all, std::unordere
         }
 
         retry_count += 1;
+        std::cout << ".";
     }
 
-    std::cout << "Done iterating.\n";
+    std::cout << "\nDone iterating.\n";
     return std::vector<Vec3> {p0, v0};
 }
 
@@ -1009,49 +978,54 @@ void printHelpMsg()
     std::cout << "Your input observations (astrometry) in Obs80 format (MPC's 80-column format):\n";
     std::cout << "primary.obs\n\n";
     std::cout << "Optional arguments are as follows (can be entered in any order):\n\n";
-    std::cout << "-obs <Obs80_input_file> -obscode <obscode_file> -spice <spice_folder_path> -R <initial_object_dist_to_observer_guess (AU)>\n\n";
+    std::cout << "-obs <Obs80_input_file> -obscode <obscode_file> -spice <spice_folder_path> -R <initial_object_dist_to_observer_guess (AU)> -maxiter <max_orbit_refinement_iterations>\n\n";
+    std::cout << "If an initial distance guess is not given, the program tries several guesses and tries to pick the best one.\n";
+    std::cout << "Default number of maximum iterations is 100.\n\n";
     std::cout << "MPFT was developed by H. A. Guler.\n\n";
     std::cout << "MPFT is licensed under GNU General Public License version 2.0 (GPL-2.0 License)\n\n";
 }
 
 int main(int argc, char *argv[])
 {
-    std::cout << "MPFT v0.1.0\n";
+    std::cout << "MPFT v0.2.0\n\n";
 
     // default parameters
     std::string obs_path = "primary.obs";
-    int param_R = 3 * AU;
-    int param_deltaR = 0;
+    int param_R = -1;
     std::string obscode_path = "data/ObsCodes.dat";
     std::string spice_path = "data/SPICE/";
+    int param_maxiter = 100;
 
     // handle command line arguments
     // there is a more compact version of doing this but this is easier for my brain
     int argtype = 0;
-    for (int idx_cmd = 0; idx_cmd < argc; idx_cmd++)
+    for (int idx_cmd = 1; idx_cmd < argc; idx_cmd++)
     {
-        if (strcmp(argv[idx_cmd], "-obs") || strcmp(argv[idx_cmd], "-observations")) // also the default argument
+        if (!strcmp(argv[idx_cmd], "-obs") || !strcmp(argv[idx_cmd], "-observations")) // also the default argument
         {
             argtype = 0;
         }
-        else if (strcmp(argv[idx_cmd], "-R"))
+        else if (!strcmp(argv[idx_cmd], "-R"))
         {
             argtype = 1;
         }
-        else if (strcmp(argv[idx_cmd], "-deltaR"))
+        else if (!strcmp(argv[idx_cmd], "-obscode"))
         {
             argtype = 2;
         }
-        else if (strcmp(argv[idx_cmd], "-obscode"))
+        else if (!strcmp(argv[idx_cmd], "-spice"))
         {
             argtype = 3;
         }
-        else if (strcmp(argv[idx_cmd], "-spice"))
+        else if (!strcmp(argv[idx_cmd], "-maxiter"))
         {
             argtype = 4;
         }
-        else if (strcmp(argv[idx_cmd], "-h") || strcmp(argv[idx_cmd], "--help"))
+        else if (!strcmp(argv[idx_cmd], "-h") || !strcmp(argv[idx_cmd], "--help")) // two dashes because people are more used to it
+        {
             printHelpMsg();
+            return 0;
+        }
         else 
         {
             switch (argtype)
@@ -1063,13 +1037,13 @@ int main(int argc, char *argv[])
                 param_R = strtod(argv[idx_cmd], NULL) * AU;
                 break;
             case 2:
-                param_deltaR = strtod(argv[idx_cmd], NULL);
-                break;
-            case 3:
                 obscode_path = argv[idx_cmd];
                 break;
-            case 4:
+            case 3:
                 spice_path = argv[idx_cmd];
+                break;
+            case 4:
+                param_maxiter = atoi(argv[idx_cmd]);
                 break;
             }
         }
@@ -1105,7 +1079,7 @@ int main(int argc, char *argv[])
     // END DEBUG part
 
     // main part, good luck
-    std::vector<Vec3> state_vec = determineOrbit(observations, obscode_map, param_R, param_deltaR);
+    std::vector<Vec3> state_vec = determineOrbit(observations, obscode_map, param_R, param_maxiter);
     Vec3 p0 = state_vec[0];
     Vec3 v0 = state_vec[1];
 
@@ -1113,7 +1087,14 @@ int main(int argc, char *argv[])
     std::cout << "Calculating final orbital parameters...\n";
     std::vector<double> orbital_elements = stateVector2Kepler(p0, v0);
 
-    std::cout << "Final orbital elements:\n";
+    double epoch_JD = 2451545.0 + observations[0].et / 86400.0;;
+    
+    std::cout << "Final orbital elements:\n\n";
+    std::cout << "Epoch: ";
+    std::cout << std::fixed << std::setprecision(6) << epoch_JD << " JD" << std::endl;
     printOrbitalElements(orbital_elements);
+    std::cout << "Epoch pos. [km]  : "; p0.printout();
+    std::cout << "Epoch vel. [km/s]: "; v0.printout();
+
     std::cout << "\nMPFT: Program end.\n";
 }
