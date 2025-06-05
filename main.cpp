@@ -918,41 +918,6 @@ Vec3 guessCircularV0(Vec3 p0, std::vector<Observation> obs_all, std::unordered_m
     return v0;
 }
 
-// gets observations and state vectors, returns RA-DEC error score
-double getErrorRADEC(Vec3 p0, Vec3 v0, std::vector<Observation> obs_all, std::unordered_map<std::string, Observatory>& obscode_map)
-{
-    Observation o1 = obs_all[0];
-
-    Vec3 p0_temp = p0;
-    Vec3 v0_temp = v0;
-    SpiceDouble et_temp = o1.et;
-
-    double err_val = 0;
-    for (int idx_o = 0; idx_o < obs_all.size(); idx_o++)
-    {
-        Observation o = obs_all[idx_o];
-
-        std::vector<Vec3> prop_res = propagate(p0_temp, v0_temp, et_temp, o.et, -1);
-        Vec3 p_check = prop_res[0];
-        Vec3 v_new = prop_res[1];
-        std::vector<double> RADEC_prop = getRADEC(o.et, obscode_map[o.obs_code], p_check);
-
-        double RA_prop = RADEC_prop[0];
-        double DEC_prop = RADEC_prop[1];
-
-        double RA_err = o.RA - RA_prop;
-        double DEC_err = o.DEC - DEC_prop;
-
-        err_val += sqrt(RA_err * RA_err + DEC_err * DEC_err);
-
-        p0_temp = p_check;
-        v0_temp = v_new;
-        et_temp = o.et;
-    }
-
-    return err_val;
-}
-
 std::pair<std::vector<double>, std::vector<double>> getResiduals(Vec3 p0, Vec3 v0, std::vector<Observation> obs_all, std::unordered_map<std::string, Observatory>& obscode_map)
 {
     Observation o1 = obs_all[0];
@@ -975,7 +940,11 @@ std::pair<std::vector<double>, std::vector<double>> getResiduals(Vec3 p0, Vec3 v
         double RA_prop = RADEC_prop[0];
         double DEC_prop = RADEC_prop[1];
 
-        double RA_err = (o.RA - RA_prop) * 3600;
+        double RA_diff = o.RA - RA_prop;
+        if (RA_diff > 180.0) RA_diff -= 360.0;
+        else if (RA_diff < -180.0) RA_diff += 360.0;
+
+        double RA_err = RA_diff * 3600;
         double DEC_err = (o.DEC - DEC_prop) * 3600;
 
         RA_res.push_back(RA_err);
@@ -989,30 +958,36 @@ std::pair<std::vector<double>, std::vector<double>> getResiduals(Vec3 p0, Vec3 v
     return std::pair<std::vector<double>, std::vector<double>> {RA_res, DEC_res};
 }
 
-// the actual orbit determination algorithm
-std::vector<Vec3> determineOrbit(std::vector<Observation> obs_all, std::unordered_map<std::string, Observatory>& obscode_map,
-    double R1, int maxiter)
+// gets observations and state vectors, returns RA-DEC error score
+double getErrorRADEC(Vec3 p0, Vec3 v0, std::vector<Observation> obs_all, std::unordered_map<std::string, Observatory>& obscode_map)
 {
-    std::cout << "Orbit determination...\n";
+    std::pair<std::vector<double>, std::vector<double>> residuals = getResiduals(p0, v0, obs_all, obscode_map);
+    std::vector<double> RA_res = residuals.first;
+    std::vector<double> DEC_res = residuals.second;
 
+    double err_val = 0;
+    for (int iter = 0; iter < RA_res.size(); iter++)
+    {
+        err_val += RA_res[iter] * RA_res[iter] + DEC_res[iter] * DEC_res[iter];
+    }
+
+    return err_val;
+}
+
+std::vector<Vec3> initialGuess(std::vector<Observation> obs_all, std::unordered_map<std::string, Observatory>& obscode_map, double R1)
+{
     Observation o1 = obs_all[0];
-    Observation o2 = obs_all[(int)(obs_all.size() / 2)];
-    Observation o3 = obs_all[obs_all.size() - 1];
-
-    SpiceDouble date_init = o1.et;
-    SpiceDouble date_final = o2.et;
-    SpiceDouble date_check = o3.et;
-
     double best_R = 2.0 * AU; // default-ish value
     if (R1 < 0)
     {
         // test for best fitting observer - object distance
-        double R1_ts[15] = { 0.1 * AU, 0.2 * AU, 0.3 * AU, 0.5 * AU, 0.75 * AU, 1 * AU,
-                            1.25 * AU, 1.5 * AU, 2 * AU, 2.5 * AU, 3 * AU, 3.5 * AU, 4 * AU,
+        double R1_ts[20] = { 0.1 * AU, 0.2 * AU, 0.3 * AU, 0.5 * AU, 0.75 * AU, 1 * AU,
+                            1.25 * AU, 1.5 * AU, 1.75 * AU, 2 * AU, 2.25 * AU, 2.5 * AU, 
+                            2.75 * AU, 3 * AU, 3.25 * AU, 3.5 * AU, 3.75 * AU, 4 * AU,
                             5 * AU, 6 * AU };
         double R_err_prev = 1E+15; // arbitrary large number
-        
-        for (int idx_Rt = 0; idx_Rt < 15; idx_Rt++)
+
+        for (int idx_Rt = 0; idx_Rt < 20; idx_Rt++)
         {
             double R1_t = R1_ts[idx_Rt];
             Vec3 p0 = getObserverPos(obscode_map[o1.obs_code], o1.et) + Vec3(o1.RA, o1.DEC) * R1_t;
@@ -1036,6 +1011,29 @@ std::vector<Vec3> determineOrbit(std::vector<Observation> obs_all, std::unordere
     Vec3 p0 = getObserverPos(obscode_map[o1.obs_code], o1.et) + Vec3(o1.RA, o1.DEC) * best_R;
     Vec3 v0 = guessCircularV0(p0, obs_all, obscode_map);
 
+    return std::vector<Vec3> {p0, v0};
+}
+
+// the actual orbit determination algorithm
+std::vector<Vec3> determineOrbit(std::vector<Observation> obs_all, std::unordered_map<std::string, Observatory>& obscode_map,
+    double R1, int maxiter)
+{
+    std::cout << "Orbit determination...\n";
+
+    Observation o1 = obs_all[0];
+    Observation o2 = obs_all[(int)(obs_all.size() / 2)];
+    Observation o3 = obs_all[obs_all.size() - 1];
+
+    SpiceDouble date_init = o1.et;
+    SpiceDouble date_final = o2.et;
+    SpiceDouble date_check = o3.et;
+
+    std::vector<Vec3> initialGuessSv = initialGuess(obs_all, obscode_map, R1);
+    Vec3 p0 = initialGuessSv[0];
+    Vec3 v0 = initialGuessSv[1];
+
+    double err_val = getErrorRADEC(p0, v0, obs_all, obscode_map);
+
     std::vector<double> orbital_elems_init = stateVector2Kepler(p0, v0, o1.et);
     std::cout << "Initial guess:\n";
     printOrbitalElements(orbital_elems_init);
@@ -1043,8 +1041,8 @@ std::vector<Vec3> determineOrbit(std::vector<Observation> obs_all, std::unordere
     std::cout << "Initial vel. [km/s]: "; v0.printout();
     std::cout << "\nIterating to refine solution";
 
-    double adjust_factor = 1;           //    1 = 10 [m s-1] per iteration
-    double adjust_pfactor = 1000;       // 1000 = 10 [km] per iteration
+    double adjust_factor = 1;             //    1 = 10 [m s-1] per iteration
+    double adjust_pfactor = 100000;       // 100000 = 1000 [km] per iteration
 
     bool good_fit = false;
     int retry_count = 0;
@@ -1052,16 +1050,17 @@ std::vector<Vec3> determineOrbit(std::vector<Observation> obs_all, std::unordere
     while (!good_fit && retry_count <= MAX_RETRY)
     {
         // check current error
-        double err_val = getErrorRADEC(p0, v0, obs_all, obscode_map);
+        err_val = getErrorRADEC(p0, v0, obs_all, obscode_map);
 
         // adjust p0, v0
-        if (err_val < 10 / 3600)
+        if (err_val < 100)
         {
             good_fit = true;
         }
         else
         {
-            std::vector<double> adjust_vals = { 0, 0, 0, 0, 0, 0 };
+            std::vector<double> adjust_vals = { 0, 0, 0, 0, 0, 0, 
+                                                0, 0, 0, 0, 0, 0};
             std::vector<Vec3> adjust_vecs =
             {
                 Vec3(0.01,  0,      0),
@@ -1072,64 +1071,50 @@ std::vector<Vec3> determineOrbit(std::vector<Observation> obs_all, std::unordere
                 Vec3(0,     0,      -0.01),
             };
 
-            for (int idx_dirad = 0; idx_dirad < 6; idx_dirad++)
+            double test_err = 1E+15;
+            int go_dir = -1;
+            Vec3 new_p0 = p0;
+            Vec3 new_v0 = v0;
+            for (int idx_multidir = 0; idx_multidir < 12; idx_multidir++)
             {
-                adjust_vecs[idx_dirad] = adjust_vecs[idx_dirad] * adjust_factor;
+                if (idx_multidir < 6)
+                {
+                    double current_test_err = getErrorRADEC(p0, v0 + adjust_vecs[idx_multidir] * adjust_factor, obs_all, obscode_map);
+                    if (current_test_err < test_err && current_test_err < err_val)
+                    {
+                        test_err = current_test_err;
+                        go_dir = idx_multidir;
+                        new_v0 = v0 + adjust_vecs[idx_multidir] * adjust_factor;
+                    }
+                }
+                else
+                {
+                    double current_test_err = getErrorRADEC(p0 + adjust_vecs[idx_multidir - 6] * adjust_pfactor, v0, obs_all, obscode_map);
+                    if (current_test_err < test_err && current_test_err < err_val)
+                    {
+                        test_err = current_test_err;
+                        go_dir = idx_multidir;
+                        new_p0 = p0 + adjust_vecs[idx_multidir - 6] * adjust_pfactor;
+                    }
+                }
             }
 
-            // adjust vel
-            for (int idx_dir = 0; idx_dir < 6; idx_dir++)
+            if (-1 < go_dir < 6)
             {
-                Vec3 v0_1 = v0 + adjust_vecs[idx_dir];
-                adjust_vals[idx_dir] = getErrorRADEC(p0, v0_1, obs_all, obscode_map);
-            }
-
-            std::vector<double>::iterator it = std::min_element(adjust_vals.begin(), adjust_vals.end());
-            int idx_min = std::distance(std::begin(adjust_vals), it);
-            if (adjust_vals[idx_min] < err_val)
-            {
-                v0 = v0 + adjust_vecs[idx_min];
                 adjust_factor *= 2;
             }
-            else
+            else if (6 < go_dir < 12)
             {
-                adjust_factor *= 0.1;
-            }
-
-            // adjust pos
-            std::vector<double> adjust_pvals = { 0, 0, 0, 0, 0, 0 };
-            std::vector<Vec3> adjust_pvecs =
-            {
-                Vec3(0.01,  0,      0),
-                Vec3(-0.01, 0,      0),
-                Vec3(0,     0.01,   0),
-                Vec3(0,     -0.01,  0),
-                Vec3(0,     0,      0.01),
-                Vec3(0,     0,      -0.01),
-            };
-
-            for (int idx_pdirad = 0; idx_pdirad < 6; idx_pdirad++)
-            {
-                adjust_pvecs[idx_pdirad] = adjust_pvecs[idx_pdirad] * adjust_pfactor;
-            }
-
-            for (int idx_pdir = 0; idx_pdir < 6; idx_pdir++)
-            {
-                Vec3 p0_1 = p0 + adjust_pvecs[idx_pdir];
-                adjust_pvals[idx_pdir] = getErrorRADEC(p0_1, v0, obs_all, obscode_map);
-            }
-
-            std::vector<double>::iterator pit = std::min_element(adjust_pvals.begin(), adjust_pvals.end());
-            int idx_pmin = std::distance(std::begin(adjust_pvals), pit);
-            if (adjust_pvals[idx_pmin] < err_val)
-            {
-                p0 = p0 + adjust_pvecs[idx_pmin];
                 adjust_pfactor *= 2;
             }
             else
             {
-                adjust_pfactor *= 0.1;
+                adjust_factor *= 0.15;
+                adjust_pfactor *= 0.15;
             }
+
+            p0 = new_p0;
+            v0 = new_v0;
         }
 
         retry_count += 1;
@@ -1197,7 +1182,7 @@ std::tuple<std::vector<std::string>, std::vector<std::string>, std::vector<std::
     return std::tuple<std::vector<std::string>, std::vector<std::string>, std::vector<std::string>> {dates, RA_hms, DEC_Dms};
 }
 
-std::tuple<std::vector<std::string>, std::vector<std::string>, std::vector<std::string>> generateEphemerisMPEC(Vec3 p0, Vec3 v0)
+std::tuple<std::vector<std::string>, std::vector<std::string>, std::vector<std::string>> generateEphemerisMPEC(Vec3 p0, Vec3 v0, SpiceDouble epoch_et)
 {
     // get today's date with clock at midnight
     std::time_t now = std::time(nullptr);
@@ -1230,7 +1215,7 @@ std::tuple<std::vector<std::string>, std::vector<std::string>, std::vector<std::
     target_ets.push_back(et_today + 15 * 86400.0);
     target_ets.push_back(et_today + 30 * 86400.0);
 
-    return generateEphemeris(et_today, p0, v0, target_ets);
+    return generateEphemeris(epoch_et, p0, v0, target_ets);
 }
 
 // styles the output in the form of a Minor Planet Center MPEC for familiarity (and therefore easy reading)
@@ -1324,7 +1309,7 @@ void printQuasiMPEC(std::vector<double> orbital_elements,
     }
 
     // print out ephemeris
-    std::tuple<std::vector<std::string>, std::vector<std::string>, std::vector<std::string>> ephemeris = generateEphemerisMPEC(p0, v0);
+    std::tuple<std::vector<std::string>, std::vector<std::string>, std::vector<std::string>> ephemeris = generateEphemerisMPEC(p0, v0, JDToEt(epoch_JD));
 
     out << "\nEphemeris:\n";
     out << objname << "                a,e,i = " << std::fixed << std::setprecision(2) << orbital_elements[0] / AU << ", "
@@ -1503,7 +1488,7 @@ int main(int argc, char *argv[])
 
     std::cout << "\n\n";
     std::cout << "================================================================================\n";
-    printQuasiMPEC(orbital_elements, observations, obscode_map, epoch_JD, orbital_period, p0_final, v0_final);
+    printQuasiMPEC(orbital_elements, observations, obscode_map, epoch_JD, orbital_period, p0, v0);
     std::cout << "================================================================================\n";
 
     // now write to file
@@ -1511,7 +1496,7 @@ int main(int argc, char *argv[])
     std::ofstream outfile(out_path);
     if (outfile.is_open())
     {
-        printQuasiMPEC(orbital_elements, observations, obscode_map, epoch_JD, orbital_period, p0_final, v0_final, outfile);
+        printQuasiMPEC(orbital_elements, observations, obscode_map, epoch_JD, orbital_period, p0, v0, outfile);
         outfile.close();
     }
     std::cout << "Done. Program end.\n";
