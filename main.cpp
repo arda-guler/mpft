@@ -2,6 +2,7 @@
 #include <string>
 #include <array>
 #include <vector>
+#include <algorithm>
 #include <ctime>
 #include <fstream>
 #include <sstream>
@@ -265,6 +266,43 @@ std::string trim(const std::string& str) // trim trailing/leading whitespace, no
     return (start == std::string::npos) ? "" : str.substr(start, end - start + 1);
 }
 
+int digitsBeforeDecimal(double value) {
+    if (value == 0.0) return 1;
+    value = std::fabs(value); // Make it positive
+    return static_cast<int>(std::floor(std::log10(value))) + 1;
+}
+
+double etToJD(SpiceDouble et)
+{
+    return 2451545.0 + et / 86400.0;
+}
+
+SpiceDouble JDToEt(double JD)
+{
+    return (JD - 2451545.0) * 86400.0;
+}
+
+std::string alignDecimal(const std::string& prefix, double value, int precision = 5) {
+    std::ostringstream oss;
+
+    // Width for just the number, not including the prefix
+    const int number_field_width = 4 + 1 + precision; // 4 digits before decimal, 1 dot, rest after
+    oss << prefix;
+
+    // Format number with fixed precision and right-align in number_field_width
+    std::ostringstream numstream;
+    numstream << std::fixed << std::setprecision(precision) << value;
+    std::string num_str = numstream.str();
+
+    int pad_spaces = number_field_width - static_cast<int>(num_str.length());
+    if (pad_spaces > 0) {
+        oss << std::string(pad_spaces, ' ');
+    }
+
+    oss << num_str;
+    return oss.str();
+}
+
 // this is the fun and simpler part of the equation
 std::vector<double> stateVector2Kepler(Vec3 r_equ, Vec3 v_equ, SpiceDouble et, double mu = 1.3271244004193938E+11)
 {
@@ -401,21 +439,49 @@ std::vector<double> cartezian2spherical (Vec3 v)
     return std::vector<double> {RA, DEC};
 }
 
+std::string RATohms(double ra_deg) {
+    double total_hours = ra_deg / 15.0;
+    int hours = static_cast<int>(total_hours);
+    double remainder_minutes = (total_hours - hours) * 60.0;
+    int minutes = static_cast<int>(remainder_minutes);
+    double seconds = (remainder_minutes - minutes) * 60.0;
+
+    std::ostringstream oss;
+    oss << std::setfill('0') << std::setw(2) << hours << ":"
+        << std::setw(2) << minutes << ":"
+        << std::fixed << std::setprecision(1) << std::setw(4) << seconds;
+    return oss.str();
+}
+
+std::string DECToDms(double dec_deg) {
+    char sign = (dec_deg >= 0) ? '+' : '-';
+    double abs_deg = std::fabs(dec_deg);
+    int degrees = static_cast<int>(abs_deg);
+    double remainder_minutes = (abs_deg - degrees) * 60.0;
+    int minutes = static_cast<int>(remainder_minutes);
+    double seconds = (remainder_minutes - minutes) * 60.0;
+
+    std::ostringstream oss;
+    oss << sign << std::setfill('0') << std::setw(2) << degrees << ":"
+        << std::setw(2) << minutes << ":"
+        << std::fixed << std::setprecision(1) << std::setw(4) << seconds;
+    return oss.str();
+}
+
+std::string doubleToResidualStr(double value) {
+    std::ostringstream oss;
+    oss << std::fixed << std::setprecision(1) << std::abs(value);
+    // why is the sign printed at the end of the number on MPECs, wtf
+    oss << (value >= 0 ? '+' : '-');
+    return oss.str();
+}
+
 // I could've made a KeplerOrbit class or whatever but this works too
 void printOrbitalElements(std::vector<double> orbel)
 {
     std::cout << "a: " << orbel[0] / AU << " e: " << orbel[1] << " i: " << orbel[2] << " Node: " << orbel[3] << " Peri: " << orbel[4] << " M: " << orbel[6] << "\n";
 }
 
-double etToJD(SpiceDouble et)
-{
-    return 2451545.0 + et / 86400.0;
-}
-
-SpiceDouble JDToEt(double JD)
-{
-    return (JD - 2451545.0) * 86400.0;
-}
 // --- --- --- MISC UTILS --- --- --- [END]
 
 // --- --- --- OBSERVATIONS AND OBSERVERS HANDLING --- --- --- [START]
@@ -444,6 +510,8 @@ std::vector<Observatory> readObsCodes(const std::string& filepath = "data/ObsCod
             std::string c_str = line.substr(13, 8);
             std::string s_str = line.substr(21, 9);
             std::string name_str = trim(line.substr(30));
+
+            obscodes.push_back(Observatory(name_str, code_str, strtod(l_str.c_str(), NULL), strtod(c_str.c_str(), NULL), strtod(s_str.c_str(), NULL)));
         }
         catch (...)
         {
@@ -477,7 +545,7 @@ std::vector<Observation> readObsFile(const std::string& filename = "primary.obs"
         }
     }
 
-    std::cout << "Done.\n";
+    std::cout << "Done.\n\n";
     return observations;
 }
 
@@ -553,6 +621,17 @@ std::vector<double> getRADEC(SpiceDouble et, Observatory obsv, Vec3 p)
 {
     Vec3 obsv_pos = getObserverPos(obsv, et);
     Vec3 rel_pos = p - obsv_pos;
+
+    return cartezian2spherical(rel_pos);
+}
+
+std::vector<double> getGeocentricRADEC(SpiceDouble et, Vec3 p)
+{
+    SpiceDouble state[6], lt;
+    spkezr_c("EARTH", et, "J2000", "NONE", "SOLAR SYSTEM BARYCENTER", state, &lt);
+    Vec3 earth_pos = Vec3(state[0], state[1], state[2]);
+
+    Vec3 rel_pos = p - earth_pos;
 
     return cartezian2spherical(rel_pos);
 }
@@ -697,8 +776,73 @@ std::vector<Vec3> propagate(Vec3 p0, Vec3 v0, SpiceDouble date_init, SpiceDouble
 
     if (dt <= 0)
     {
-        dt = time_interval / 16;
+        dt = time_interval / 4;
         while (dt > 10 * 86400)
+        {
+            dt = dt / 2;
+        }
+    }
+
+    int N_cycles = (int)(time_interval / dt + 1);
+    SpiceDouble date_final_actual = date_init + N_cycles * dt;
+
+    for (int cycle = 0; cycle < N_cycles; cycle++)
+    {
+        SpiceDouble cycle_date = date_init + cycle * dt;
+        stepYoshida8(mp, bodies, cycle_date, dt);
+    }
+
+    // final little correction
+    double extra_time = N_cycles * dt - time_interval;
+    mp.pos = mp.pos - mp.vel * extra_time;
+
+    return std::vector<Vec3> {Vec3(mp.pos), Vec3(mp.vel)};
+}
+
+// very little difference with propagate(), only in handling of dt (time step) value
+std::vector<Vec3> backpropagate(Vec3 p0, Vec3 v0, SpiceDouble date_init, SpiceDouble date_final, double dt)
+{
+    MinorPlanet mp = MinorPlanet(p0, v0);
+
+    const char* body_names[9] = {
+        "SUN",
+        "MERCURY BARYCENTER",
+        "VENUS BARYCENTER",
+        "EARTH BARYCENTER",
+        "MARS BARYCENTER",
+        "JUPITER BARYCENTER",
+        "SATURN BARYCENTER",
+        "URANUS BARYCENTER",
+        "NEPTUNE BARYCENTER"
+    };
+
+    const double body_GMs[9] = {
+        1.3271244004193938E+11,
+        2.2031780000000021E+04,
+        3.2485859200000006E+05,
+        4.0350323550225981E+05,
+        4.2828375214000022E+04,
+        1.2671276480000021E+08,
+        3.7940585200000003E+07,
+        5.7945486000000080E+06,
+        6.8365271005800236E+06
+    };
+
+    std::vector<Body> bodies;
+    StateMatrix system_state = getSolarSystemStates(date_init);
+
+    for (int i = 0; i < 8; i++)
+    {
+        bodies.push_back(Body(body_names[i], body_GMs[i]));
+        bodies[i].pos = Vec3(system_state[i][0]);
+    }
+
+    double time_interval = date_final - date_init;
+
+    if (dt >= 0)
+    {
+        dt = time_interval / 4;
+        while (dt < -10 * 86400)
         {
             dt = dt / 2;
         }
@@ -779,13 +923,18 @@ double getErrorRADEC(Vec3 p0, Vec3 v0, std::vector<Observation> obs_all, std::un
 {
     Observation o1 = obs_all[0];
 
+    Vec3 p0_temp = p0;
+    Vec3 v0_temp = v0;
+    SpiceDouble et_temp = o1.et;
+
     double err_val = 0;
     for (int idx_o = 0; idx_o < obs_all.size(); idx_o++)
     {
         Observation o = obs_all[idx_o];
 
-        std::vector<Vec3> prop_res = propagate(p0, v0, o1.et, o.et, -1);
+        std::vector<Vec3> prop_res = propagate(p0_temp, v0_temp, et_temp, o.et, -1);
         Vec3 p_check = prop_res[0];
+        Vec3 v_new = prop_res[1];
         std::vector<double> RADEC_prop = getRADEC(o.et, obscode_map[o.obs_code], p_check);
 
         double RA_prop = RADEC_prop[0];
@@ -795,9 +944,49 @@ double getErrorRADEC(Vec3 p0, Vec3 v0, std::vector<Observation> obs_all, std::un
         double DEC_err = o.DEC - DEC_prop;
 
         err_val += sqrt(RA_err * RA_err + DEC_err * DEC_err);
+
+        p0_temp = p_check;
+        v0_temp = v_new;
+        et_temp = o.et;
     }
 
     return err_val;
+}
+
+std::pair<std::vector<double>, std::vector<double>> getResiduals(Vec3 p0, Vec3 v0, std::vector<Observation> obs_all, std::unordered_map<std::string, Observatory>& obscode_map)
+{
+    Observation o1 = obs_all[0];
+
+    Vec3 p0_temp = p0;
+    Vec3 v0_temp = v0;
+    SpiceDouble et_temp = o1.et;
+
+    std::vector<double> RA_res;
+    std::vector<double> DEC_res;
+    for (int idx_o = 0; idx_o < obs_all.size(); idx_o++)
+    {
+        Observation o = obs_all[idx_o];
+
+        std::vector<Vec3> prop_res = propagate(p0_temp, v0_temp, et_temp, o.et, -1);
+        Vec3 p_check = prop_res[0];
+        Vec3 v_new = prop_res[1];
+        std::vector<double> RADEC_prop = getRADEC(o.et, obscode_map[o.obs_code], p_check);
+
+        double RA_prop = RADEC_prop[0];
+        double DEC_prop = RADEC_prop[1];
+
+        double RA_err = (o.RA - RA_prop) * 3600;
+        double DEC_err = (o.DEC - DEC_prop) * 3600;
+
+        RA_res.push_back(RA_err);
+        DEC_res.push_back(DEC_err);
+
+        p0_temp = p_check;
+        v0_temp = v_new;
+        et_temp = o.et;
+    }
+
+    return std::pair<std::vector<double>, std::vector<double>> {RA_res, DEC_res};
 }
 
 // the actual orbit determination algorithm
@@ -854,8 +1043,8 @@ std::vector<Vec3> determineOrbit(std::vector<Observation> obs_all, std::unordere
     std::cout << "Initial vel. [km/s]: "; v0.printout();
     std::cout << "\nIterating to refine solution";
 
-    double adjust_factor = 1;
-    double adjust_pfactor = 1;
+    double adjust_factor = 1;           //    1 = 10 [m s-1] per iteration
+    double adjust_pfactor = 1000;       // 1000 = 10 [km] per iteration
 
     bool good_fit = false;
     int retry_count = 0;
@@ -960,6 +1149,210 @@ std::pair<std::vector<Vec3>, double> propagateToNextMidnight(Vec3 p0, Vec3 v0, S
     return { propagate(p0, v0, t0, t1, -1), JD_1 };
 }
 
+std::tuple<std::vector<std::string>, std::vector<std::string>, std::vector<std::string>> generateEphemeris(SpiceDouble t0, Vec3 p0, Vec3 v0, std::vector<SpiceDouble> ts)
+{
+    std::vector<double> RA_result;
+    std::vector<double> DEC_result;
+
+    for (int idx_tdiff = 0; idx_tdiff < ts.size(); idx_tdiff++)
+    {
+        if (ts[idx_tdiff] > t0)
+        {
+            std::vector<Vec3> sv_prop = propagate(p0, v0, t0, ts[idx_tdiff], -1);
+            Vec3 p_t = sv_prop[0];
+            std::vector<double> RADEC = getGeocentricRADEC(ts[idx_tdiff], p_t);
+            RA_result.push_back(RADEC[0]);
+            DEC_result.push_back(RADEC[1]);
+        }
+        else if (ts[idx_tdiff] == t0) // the date is epoch date
+        {
+            std::vector<double> RADEC = getGeocentricRADEC(ts[idx_tdiff], p0);
+            RA_result.push_back(RADEC[0]);
+            DEC_result.push_back(RADEC[1]);
+        }
+        else
+        {
+            std::vector<Vec3> sv_prop = backpropagate(p0, v0, t0, ts[idx_tdiff], 1);
+            Vec3 p_t = sv_prop[0];
+            std::vector<double> RADEC = getGeocentricRADEC(ts[idx_tdiff], p_t);
+            RA_result.push_back(RADEC[0]);
+            DEC_result.push_back(RADEC[1]);
+        }
+    }
+
+    // convert RA and DEC from decimal degrees to hh:mm:ss and sDD:mm:ss
+    std::vector<std::string> RA_hms;
+    std::vector<std::string> DEC_Dms;
+    std::vector<std::string> dates;
+
+    for (int idx_result = 0; idx_result < RA_result.size(); idx_result++)
+    {
+        SpiceChar utcstr[20];
+        et2utc_c(ts[idx_result], "ISOC", 0, 20, utcstr);
+        dates.push_back(utcstr);
+        RA_hms.push_back(RATohms(RA_result[idx_result]));
+        DEC_Dms.push_back(DECToDms(DEC_result[idx_result]));
+    }
+
+    return std::tuple<std::vector<std::string>, std::vector<std::string>, std::vector<std::string>> {dates, RA_hms, DEC_Dms};
+}
+
+std::tuple<std::vector<std::string>, std::vector<std::string>, std::vector<std::string>> generateEphemerisMPEC(Vec3 p0, Vec3 v0)
+{
+    // get today's date with clock at midnight
+    std::time_t now = std::time(nullptr);
+    std::tm utc_tm{};
+    errno_t err = gmtime_s(&utc_tm, &now);
+    if (err) {
+        throw std::runtime_error("gmtime_s failed");
+    }
+
+    utc_tm.tm_hour = 0;
+    utc_tm.tm_min = 0;
+    utc_tm.tm_sec = 0;
+
+    std::time_t utc_midnight = _mkgmtime(&utc_tm);
+
+    char utc_str[32];
+    std::strftime(utc_str, sizeof(utc_str), "%Y-%m-%dT%H:%M:%S", &utc_tm);
+
+    SpiceDouble et_today;
+    utc2et_c(utc_str, &et_today);
+
+    std::vector<SpiceDouble> target_ets;
+    target_ets.push_back(et_today - 30 * 86400.0);
+    target_ets.push_back(et_today - 15 * 86400.0);
+    target_ets.push_back(et_today - 7 * 86400.0);
+    target_ets.push_back(et_today - 1 * 86400.0);
+    target_ets.push_back(et_today);
+    target_ets.push_back(et_today + 1 * 86400.0);
+    target_ets.push_back(et_today + 7 * 86400.0);
+    target_ets.push_back(et_today + 15 * 86400.0);
+    target_ets.push_back(et_today + 30 * 86400.0);
+
+    return generateEphemeris(et_today, p0, v0, target_ets);
+}
+
+// styles the output in the form of a Minor Planet Center MPEC for familiarity (and therefore easy reading)
+void printQuasiMPEC(std::vector<double> orbital_elements,
+    std::vector<Observation> observations,
+    std::unordered_map<std::string, Observatory>& observatories,
+    double epoch_JD, double orbital_period, Vec3 p0, Vec3 v0,
+    std::ostream& out = std::cout)
+{
+    out << "This quasi-MPEC is NOT an official Minor Planet Electronic Circular!\n";
+    out << "It is merely styled as such for familiarity to minor planet astronomers.\n\n";
+
+    // print 80-column observations, also get observatory keys
+    std::vector<std::string> obscodes = {};
+    out << "Observations:\n";
+    for (int idx_obs = 0; idx_obs < (int)observations.size(); idx_obs++)
+    {
+        Observation obs = observations[idx_obs];
+        out << obs.obs_str << "\n";
+
+        if (std::find(obscodes.begin(), obscodes.end(), obs.obs_code) == obscodes.end()) // if obscode NOT present in vector
+        {
+            obscodes.push_back(obs.obs_code);
+        }
+    }
+
+    out << "\n";
+
+    // print observatories details
+    out << "Observatories:\n";
+    for (int idx_obscode = 0; idx_obscode < (int)obscodes.size(); idx_obscode++)
+    {
+        out << obscodes[idx_obscode] << " " << observatories[obscodes[idx_obscode]].name << "\n";
+    }
+
+    out << "\n";
+
+    // print orbital elements
+    std::string objname;
+    out << "Orbital elements:\n";
+    if (observations[0].prov.empty())
+    {
+        objname = observations[0].perm;
+    }
+    else
+    {
+        objname = observations[0].prov;
+    }
+    out << objname << "\n";
+
+    SpiceChar utcstr[20];
+    int utclen = 20;
+    et2utc_c(JDToEt(epoch_JD), "ISOC", 0, utclen, utcstr); // convert epoch JD to ISO
+
+    double n = 360.0 / orbital_period * 86400.0; // deg/day
+    double q = (1 - orbital_elements[1]) * orbital_elements[0] / AU; // perihelion dist.
+
+    std::pair<std::vector<double>, std::vector<double>> residuals = getResiduals(p0, v0, observations, observatories);
+    std::vector<double> RA_res = residuals.first;
+    std::vector<double> DEC_res = residuals.second;
+
+    std::vector<std::string> residual_elements;
+    for (int idx_res = 0; idx_res < (int)RA_res.size(); idx_res++)
+    {
+        std::string residual_elem = observations[idx_res].obs_str.substr(17, 2) + observations[idx_res].obs_str.substr(20, 2) + observations[idx_res].obs_str.substr(23, 2) +
+            " " + observations[idx_res].obs_code + " " + doubleToResidualStr(RA_res[idx_res]) + " " + doubleToResidualStr(DEC_res[idx_res]);
+        residual_elements.push_back(residual_elem);
+    }
+
+    out << "Epoch: " << utcstr << " = JDT " << std::fixed << std::setprecision(1) << epoch_JD << "                   MPFT\n";
+    out << alignDecimal("M ", orbital_elements[6]) << "              (2000.0)\n";
+    out << alignDecimal("n ", n, 5) << "        " << alignDecimal("Peri. ", orbital_elements[4]) << "\n";
+    out << alignDecimal("a ", orbital_elements[0] / AU, 5) << "        " << alignDecimal("Node  ", orbital_elements[3]) << "\n";
+    out << alignDecimal("e ", orbital_elements[1], 5) << "        " << alignDecimal("Incl. ", orbital_elements[2]) << "\n";
+    out << alignDecimal("P ", orbital_period / 86400.0 / 365, 2) << "\n";
+
+    out << "Residuals in seconds of arc\n";
+    const int cols = 3;
+    const int col_width = 25;
+    const int rows = (int)((residual_elements.size() + cols - 1) / cols);
+
+    for (int r = 0; r < rows; ++r) {
+        for (int c = 0; c < cols; ++c) {
+            int idx = r + rows * c;
+            if (idx < (int)residual_elements.size())
+                out << std::left << std::setw(col_width) << residual_elements[idx];
+            else
+                out << std::left << std::setw(col_width) << "";
+        }
+        out << '\n';
+    }
+
+    // print out ephemeris
+    std::tuple<std::vector<std::string>, std::vector<std::string>, std::vector<std::string>> ephemeris = generateEphemerisMPEC(p0, v0);
+
+    out << "\nEphemeris:\n";
+    out << objname << "                a,e,i = " << std::fixed << std::setprecision(2) << orbital_elements[0] / AU << ", "
+        << std::fixed << std::setprecision(2) << orbital_elements[1] << ", "
+        << std::fixed << std::setprecision(0) << orbital_elements[2] << "                   " <<
+        "q = " << std::fixed << std::setprecision(4) << q << "\n";
+
+    out << "Date                     R. A. (2000) Decl.\n";
+    out << std::get<0>(ephemeris)[0] << "    " << std::get<1>(ephemeris)[0] << " " << std::get<2>(ephemeris)[0] << "\n";
+    out << "...\n";
+    out << std::get<0>(ephemeris)[1] << "    " << std::get<1>(ephemeris)[1] << " " << std::get<2>(ephemeris)[1] << "\n";
+    out << "...\n";
+    out << std::get<0>(ephemeris)[2] << "    " << std::get<1>(ephemeris)[2] << " " << std::get<2>(ephemeris)[2] << "\n";
+    out << "...\n";
+    out << std::get<0>(ephemeris)[3] << "    " << std::get<1>(ephemeris)[3] << " " << std::get<2>(ephemeris)[3] << "\n";
+    out << std::get<0>(ephemeris)[4] << "    " << std::get<1>(ephemeris)[4] << " " << std::get<2>(ephemeris)[4] << "\n";
+    out << std::get<0>(ephemeris)[5] << "    " << std::get<1>(ephemeris)[5] << " " << std::get<2>(ephemeris)[5] << "\n";
+    out << "...\n";
+    out << std::get<0>(ephemeris)[6] << "    " << std::get<1>(ephemeris)[6] << " " << std::get<2>(ephemeris)[6] << "\n";
+    out << "...\n";
+    out << std::get<0>(ephemeris)[7] << "    " << std::get<1>(ephemeris)[7] << " " << std::get<2>(ephemeris)[7] << "\n";
+    out << "...\n";
+    out << std::get<0>(ephemeris)[8] << "    " << std::get<1>(ephemeris)[8] << " " << std::get<2>(ephemeris)[8] << "\n";
+    out << "\n";
+    out << "M. P. F. T. Software         (C) Copyleft MPFT Authors               Quasi-MPEC\n";
+}
+
+
 void printHelpMsg()
 {
     std::cout << " === MPFT HELP ===\n";
@@ -977,16 +1370,16 @@ void printHelpMsg()
     std::cout << "Your input observations (astrometry) in Obs80 format (MPC's 80-column format):\n";
     std::cout << "primary.obs\n\n";
     std::cout << "Optional arguments are as follows (can be entered in any order):\n\n";
-    std::cout << "-obs <Obs80_input_file> -obscode <obscode_file> -spice <spice_folder_path> -R <initial_object_dist_to_observer_guess (AU)> -maxiter <max_orbit_refinement_iterations>\n\n";
+    std::cout << "-obs <Obs80_input_file> -obscode <obscode_file> -spice <spice_folder_path> -R <initial_object_dist_to_observer_guess (AU)> -maxiter <max_orbit_refinement_iterations> -out <output_file_path>\n\n";
     std::cout << "If an initial distance guess is not given, the program tries several guesses and tries to pick the best one.\n";
-    std::cout << "Default number of maximum iterations is 100.\n\n";
+    std::cout << "Default number of maximum iterations is 100. Output file will be named quasi-MPEC.txt by default.\n\n";
     std::cout << "MPFT was developed by H. A. Guler.\n\n";
     std::cout << "MPFT is licensed under GNU General Public License version 2.0 (GPL-2.0 License)\n\n";
 }
 
 int main(int argc, char *argv[])
 {
-    std::cout << "MPFT v0.2.0\n\n";
+    std::cout << "MPFT v0.3.0\n\n";
 
     // default parameters
     std::string obs_path = "primary.obs";
@@ -994,6 +1387,7 @@ int main(int argc, char *argv[])
     std::string obscode_path = "data/ObsCodes.dat";
     std::string spice_path = "data/SPICE/";
     int param_maxiter = 100;
+    std::string out_path = "quasi-MPEC.txt";
 
     // handle command line arguments
     // there is a more compact version of doing this but this is easier for my brain
@@ -1020,6 +1414,10 @@ int main(int argc, char *argv[])
         {
             argtype = 4;
         }
+        else if (!strcmp(argv[idx_cmd], "-out") || !strcmp(argv[idx_cmd], "-output"))
+        {
+            argtype = 5;
+        }
         else if (!strcmp(argv[idx_cmd], "-h") || !strcmp(argv[idx_cmd], "--help")) // two dashes because people are more used to it
         {
             printHelpMsg();
@@ -1043,6 +1441,9 @@ int main(int argc, char *argv[])
                 break;
             case 4:
                 param_maxiter = atoi(argv[idx_cmd]);
+                break;
+            case 5:
+                out_path = argv[idx_cmd];
                 break;
             }
         }
@@ -1100,14 +1501,18 @@ int main(int argc, char *argv[])
 
     double periapsis_JD = epoch_JD - orbit_traverse_fraction * orbital_period / 86400.0;
 
-    std::cout << "\nFinal orbital elements:\n\n";
-    std::cout << "Epoch: ";
-    std::cout << std::fixed << std::setprecision(1) << epoch_JD << " JD" << std::endl;
-    std::cout << "Time of Perihelion: ";
-    std::cout << std::fixed << std::setprecision(6) << periapsis_JD << " JD" << std::endl;
-    printOrbitalElements(orbital_elements);
-    std::cout << "Epoch pos. [km]  : "; p0_final.printout();
-    std::cout << "Epoch vel. [km/s]: "; v0_final.printout();
+    std::cout << "\n\n";
+    std::cout << "================================================================================\n";
+    printQuasiMPEC(orbital_elements, observations, obscode_map, epoch_JD, orbital_period, p0_final, v0_final);
+    std::cout << "================================================================================\n";
 
-    std::cout << "\nMPFT: Program end.\n";
+    // now write to file
+    std::cout << "\nWriting output quasi-MPEC to " << out_path << "... ";
+    std::ofstream outfile(out_path);
+    if (outfile.is_open())
+    {
+        printQuasiMPEC(orbital_elements, observations, obscode_map, epoch_JD, orbital_period, p0_final, v0_final, outfile);
+        outfile.close();
+    }
+    std::cout << "Done. Program end.\n";
 }
