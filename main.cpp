@@ -1,6 +1,7 @@
 #include <iostream>
 #include <string>
 #include <array>
+#include <windows.h>
 #include <vector>
 #include <algorithm>
 #include <ctime>
@@ -259,6 +260,28 @@ using StateMatrix = std::array<std::array<std::array<double, 3>, 2>, 9>; // I do
 // --- --- --- STRUCT AND CLASS DEFINITIONS --- --- --- [END]
 
 // --- --- --- MISC UTILS --- --- --- [START]
+void loadAllKernels(const std::string& directory) 
+{
+    std::string search_path = directory + "\\*.*";
+    WIN32_FIND_DATAA fd;
+    HANDLE hFind = ::FindFirstFileA(search_path.c_str(), &fd);
+
+    if (hFind == INVALID_HANDLE_VALUE) {
+        std::cerr << "Unable to open directory: " << directory << '\n';
+        return;
+    }
+
+    do {
+        if (!(fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)) {
+            std::string filepath = directory + "\\" + fd.cFileName;
+            furnsh_c(filepath.c_str());
+            // std::cout << "Loaded kernel: " << filepath << '\n';
+        }
+    } while (::FindNextFileA(hFind, &fd));
+
+    ::FindClose(hFind);
+}
+
 std::string trim(const std::string& str) // trim trailing/leading whitespace, nothing fancy, stole it from somewhere
 {
     size_t start = str.find_first_not_of(" \t\r\n");
@@ -480,6 +503,20 @@ std::string doubleToResidualStr(double value) {
 void printOrbitalElements(std::vector<double> orbel)
 {
     std::cout << "a: " << orbel[0] / AU << " e: " << orbel[1] << " i: " << orbel[2] << " Node: " << orbel[3] << " Peri: " << orbel[4] << " M: " << orbel[6] << "\n";
+}
+
+std::vector<double> flattenResiduals(const std::pair<std::vector<double>, std::vector<double>>& residual_pair) {
+    const std::vector<double>& ra_res = residual_pair.first;
+    const std::vector<double>& dec_res = residual_pair.second;
+    std::vector<double> flat;
+    flat.reserve(ra_res.size() + dec_res.size());
+
+    for (std::size_t i = 0; i < ra_res.size(); ++i) {
+        flat.push_back(ra_res[i]);
+        flat.push_back(dec_res[i]);
+    }
+
+    return flat;
 }
 
 // --- --- --- MISC UTILS --- --- --- [END]
@@ -981,13 +1018,18 @@ std::vector<Vec3> initialGuess(std::vector<Observation> obs_all, std::unordered_
     if (R1 < 0)
     {
         // test for best fitting observer - object distance
-        double R1_ts[20] = { 0.1 * AU, 0.2 * AU, 0.3 * AU, 0.5 * AU, 0.75 * AU, 1 * AU,
+        double R1_ts[63] = { 0.1 * AU, 0.2 * AU, 0.3 * AU, 0.5 * AU, 0.75 * AU, 1 * AU,
                             1.25 * AU, 1.5 * AU, 1.75 * AU, 2 * AU, 2.25 * AU, 2.5 * AU, 
                             2.75 * AU, 3 * AU, 3.25 * AU, 3.5 * AU, 3.75 * AU, 4 * AU,
-                            5 * AU, 6 * AU };
+                            5 * AU, 6 * AU, 7 * AU, 8 * AU, 9 * AU, 10 * AU, 11 * AU, 12 * AU,
+                            13 * AU, 14 * AU, 15 * AU, 16 * AU, 18 * AU, 20 * AU, 22 * AU, 24 * AU,
+                            26 * AU, 28 * AU, 29 * AU, 30 * AU, 31 * AU, 32 * AU, 33 * AU, 34 * AU,
+                            35 * AU, 36 * AU, 37 * AU, 38 * AU, 39 * AU, 40 * AU, 41 * AU, 42 * AU,
+                            43 * AU, 44 * AU, 45 * AU, 46 * AU, 47 * AU, 48 * AU, 49 * AU, 50 * AU,
+                            51 * AU, 52 * AU, 53 * AU, 54 * AU, 55 * AU};
         double R_err_prev = 1E+15; // arbitrary large number
 
-        for (int idx_Rt = 0; idx_Rt < 20; idx_Rt++)
+        for (int idx_Rt = 0; idx_Rt < 63; idx_Rt++)
         {
             double R1_t = R1_ts[idx_Rt];
             Vec3 p0 = getObserverPos(obscode_map[o1.obs_code], o1.et) + Vec3(o1.RA, o1.DEC) * R1_t;
@@ -1012,6 +1054,148 @@ std::vector<Vec3> initialGuess(std::vector<Observation> obs_all, std::unordered_
     Vec3 v0 = guessCircularV0(p0, obs_all, obscode_map);
 
     return std::vector<Vec3> {p0, v0};
+}
+
+std::vector<double> computeGradient(Vec3 p0, Vec3 v0, std::vector<Observation> obs_all, std::unordered_map<std::string, Observatory>& obscode_map)
+{
+    double err0 = getErrorRADEC(p0, v0, obs_all, obscode_map);
+    std::vector<double> grad = {0, 0, 0, 0, 0, 0};
+
+    double eps_vel = 1;
+    double eps_pos = 1;
+
+    grad[0] = (getErrorRADEC(p0, v0 + Vec3(1, 0, 0) * eps_vel, obs_all, obscode_map) - err0) / eps_vel;
+    grad[1] = (getErrorRADEC(p0, v0 + Vec3(0, 1, 0) * eps_vel, obs_all, obscode_map) - err0) / eps_vel;
+    grad[2] = (getErrorRADEC(p0, v0 + Vec3(0, 0, 1) * eps_vel, obs_all, obscode_map) - err0) / eps_vel;
+
+    grad[3] = (getErrorRADEC(p0 + Vec3(1, 0, 0) * eps_pos, v0, obs_all, obscode_map) - err0) / eps_pos;
+    grad[4] = (getErrorRADEC(p0 + Vec3(0, 1, 0) * eps_pos, v0, obs_all, obscode_map) - err0) / eps_pos;
+    grad[5] = (getErrorRADEC(p0 + Vec3(0, 0, 1) * eps_pos, v0, obs_all, obscode_map) - err0) / eps_pos;
+
+    return grad;
+}
+
+std::vector<std::array<double, 6>> computeJacobian(Vec3 p0, Vec3 v0, std::vector<Observation> obs_all,
+    std::unordered_map<std::string, Observatory>& obscode_map,
+    double eps_v = 1e-2, double eps_p = 1e3) 
+{
+    int N = obs_all.size();
+    std::vector<std::array<double, 6>> J(2 * N);  // 2 residuals per observation
+
+    std::pair<std::vector<double>, std::vector<double>> base_pair = getResiduals(p0, v0, obs_all, obscode_map);
+    std::vector<double> base_residuals = flattenResiduals(base_pair);
+
+    for (int j = 0; j < 3; ++j) 
+    {
+        // perturb velocity
+        Vec3 dv(0, 0, 0);
+        if (j == 0) dv.x = eps_v;
+        else if (j == 1) dv.y = eps_v;
+        else dv.z = eps_v;
+
+        std::pair<std::vector<double>, std::vector<double>> plus_pair_v = getResiduals(p0, v0 + dv, obs_all, obscode_map);
+        std::pair<std::vector<double>, std::vector<double>> minus_pair_v = getResiduals(p0, v0 - dv, obs_all, obscode_map);
+
+        std::vector<double> res_plus_v = flattenResiduals(plus_pair_v);
+        std::vector<double> res_minus_v = flattenResiduals(minus_pair_v);
+
+        for (int i = 0; i < 2 * N; ++i) 
+        {
+            J[i][j] = (res_plus_v[i] - res_minus_v[i]) / (2.0 * eps_v);
+        }
+
+        // perturb position
+        Vec3 dp(0, 0, 0);
+        if (j == 0) dp.x = eps_p;
+        else if (j == 1) dp.y = eps_p;
+        else dp.z = eps_p;
+
+        std::pair<std::vector<double>, std::vector<double>> plus_pair_p = getResiduals(p0 + dp, v0, obs_all, obscode_map);
+        std::pair<std::vector<double>, std::vector<double>> minus_pair_p = getResiduals(p0 - dp, v0, obs_all, obscode_map);
+
+        std::vector<double> res_plus_p = flattenResiduals(plus_pair_p);
+        std::vector<double> res_minus_p = flattenResiduals(minus_pair_p);
+
+        for (int i = 0; i < 2 * N; ++i) 
+        {
+            J[i][j + 3] = (res_plus_p[i] - res_minus_p[i]) / (2.0 * eps_p);
+        }
+    }
+
+    return J;
+}
+
+std::array<double, 6> computeGaussNewtonStep(std::vector<std::array<double, 6>>& J, std::vector<double>& r) 
+{
+    int M = J.size();
+
+    double JTJ[6][6] = {};
+    std::array<double, 6> JTr = {};
+
+    for (int i = 0; i < M; ++i) 
+    {
+        for (int j = 0; j < 6; ++j) 
+        {
+            JTr[j] += J[i][j] * r[i];
+            for (int k = 0; k < 6; ++k) 
+            {
+                JTJ[j][k] += J[i][j] * J[i][k];
+            }
+        }
+    }
+
+    // JTJ * dx = -JTr
+    double A[6][7]; // augmented matrix
+
+    for (int i = 0; i < 6; ++i) {
+        for (int j = 0; j < 6; ++j) {
+            A[i][j] = JTJ[i][j];
+        }
+        A[i][6] = -JTr[i];
+    }
+
+    // Gaussian elimination
+    for (int i = 0; i < 6; ++i) 
+    {
+        int pivot = i;
+        for (int j = i + 1; j < 6; ++j) 
+        {
+            if (std::fabs(A[j][i]) > std::fabs(A[pivot][i])) 
+            {
+                pivot = j;
+            }
+        }
+        for (int j = 0; j < 7; ++j) 
+        {
+            std::swap(A[i][j], A[pivot][j]);
+        }
+
+        double div = A[i][i];
+        for (int j = i; j < 7; ++j) 
+        {
+            A[i][j] /= div;
+        }
+
+        for (int j = 0; j < 6; ++j) 
+        {
+            if (j != i) 
+            {
+                double f = A[j][i];
+                for (int k = i; k < 7; ++k) 
+                {
+                    A[j][k] -= f * A[i][k];
+                }
+            }
+        }
+    }
+
+    std::array<double, 6> dx;
+    for (int i = 0; i < 6; ++i) 
+    {
+        dx[i] = A[i][6];
+    }
+
+    return dx;
 }
 
 // the actual orbit determination algorithm
@@ -1041,8 +1225,7 @@ std::vector<Vec3> determineOrbit(std::vector<Observation> obs_all, std::unordere
     std::cout << "Initial vel. [km/s]: "; v0.printout();
     std::cout << "\nIterating to refine solution";
 
-    double adjust_factor = 1;             //    1 = 10 [m s-1] per iteration
-    double adjust_pfactor = 100000;       // 100000 = 1000 [km] per iteration
+    double adjust_factor = 1;
 
     bool good_fit = false;
     int retry_count = 0;
@@ -1052,69 +1235,34 @@ std::vector<Vec3> determineOrbit(std::vector<Observation> obs_all, std::unordere
         // check current error
         err_val = getErrorRADEC(p0, v0, obs_all, obscode_map);
 
-        // adjust p0, v0
-        if (err_val < 100)
+        if (err_val < 10)
         {
             good_fit = true;
+            break;
+        }
+
+        // get gradient in state-vector-space
+        std::vector<double> grad = computeGradient(p0, v0, obs_all, obscode_map);
+
+        std::pair<std::vector<double>, std::vector<double>> residuals = getResiduals(p0, v0, obs_all, obscode_map);
+        std::vector<double> r = flattenResiduals(residuals);
+        std::vector<std::array<double, 6>> J = computeJacobian(p0, v0, obs_all, obscode_map);
+        std::array<double, 6> dx = computeGaussNewtonStep(J, r);
+
+        Vec3 v0_new = v0 + Vec3(dx[0], dx[1], dx[2]) * adjust_factor;
+        Vec3 p0_new = p0 + Vec3(dx[3], dx[4], dx[5]) * adjust_factor;
+
+        double err_val_new = getErrorRADEC(p0_new, v0_new, obs_all, obscode_map);
+
+        if (err_val_new < err_val)
+        {
+            v0 = v0_new;
+            p0 = p0_new;
+            adjust_factor *= 1.8;
         }
         else
         {
-            std::vector<double> adjust_vals = { 0, 0, 0, 0, 0, 0, 
-                                                0, 0, 0, 0, 0, 0};
-            std::vector<Vec3> adjust_vecs =
-            {
-                Vec3(0.01,  0,      0),
-                Vec3(-0.01, 0,      0),
-                Vec3(0,     0.01,   0),
-                Vec3(0,     -0.01,  0),
-                Vec3(0,     0,      0.01),
-                Vec3(0,     0,      -0.01),
-            };
-
-            double test_err = 1E+15;
-            int go_dir = -1;
-            Vec3 new_p0 = p0;
-            Vec3 new_v0 = v0;
-            for (int idx_multidir = 0; idx_multidir < 12; idx_multidir++)
-            {
-                if (idx_multidir < 6)
-                {
-                    double current_test_err = getErrorRADEC(p0, v0 + adjust_vecs[idx_multidir] * adjust_factor, obs_all, obscode_map);
-                    if (current_test_err < test_err && current_test_err < err_val)
-                    {
-                        test_err = current_test_err;
-                        go_dir = idx_multidir;
-                        new_v0 = v0 + adjust_vecs[idx_multidir] * adjust_factor;
-                    }
-                }
-                else
-                {
-                    double current_test_err = getErrorRADEC(p0 + adjust_vecs[idx_multidir - 6] * adjust_pfactor, v0, obs_all, obscode_map);
-                    if (current_test_err < test_err && current_test_err < err_val)
-                    {
-                        test_err = current_test_err;
-                        go_dir = idx_multidir;
-                        new_p0 = p0 + adjust_vecs[idx_multidir - 6] * adjust_pfactor;
-                    }
-                }
-            }
-
-            if (-1 < go_dir < 6)
-            {
-                adjust_factor *= 2;
-            }
-            else if (6 < go_dir < 12)
-            {
-                adjust_pfactor *= 2;
-            }
-            else
-            {
-                adjust_factor *= 0.15;
-                adjust_pfactor *= 0.15;
-            }
-
-            p0 = new_p0;
-            v0 = new_v0;
+            adjust_factor *= 0.1;
         }
 
         retry_count += 1;
@@ -1334,7 +1482,7 @@ void printQuasiMPEC(std::vector<double> orbital_elements,
     out << "...\n";
     out << std::get<0>(ephemeris)[8] << "    " << std::get<1>(ephemeris)[8] << " " << std::get<2>(ephemeris)[8] << "\n";
     out << "\n";
-    out << "M. P. F. T. Software         (C) Copyleft MPFT Authors               Quasi-MPEC\n";
+    out << "M. P. F. T. Software         (C/) Copyleft MPFT Authors              Quasi-MPEC\n";
 }
 
 
@@ -1357,21 +1505,21 @@ void printHelpMsg()
     std::cout << "Optional arguments are as follows (can be entered in any order):\n\n";
     std::cout << "-obs <Obs80_input_file> -obscode <obscode_file> -spice <spice_folder_path> -R <initial_object_dist_to_observer_guess (AU)> -maxiter <max_orbit_refinement_iterations> -out <output_file_path>\n\n";
     std::cout << "If an initial distance guess is not given, the program tries several guesses and tries to pick the best one.\n";
-    std::cout << "Default number of maximum iterations is 100. Output file will be named quasi-MPEC.txt by default.\n\n";
+    std::cout << "Default number of maximum iterations is 20. Output file will be named quasi-MPEC.txt by default.\n\n";
     std::cout << "MPFT was developed by H. A. Guler.\n\n";
     std::cout << "MPFT is licensed under GNU General Public License version 2.0 (GPL-2.0 License)\n\n";
 }
 
 int main(int argc, char *argv[])
 {
-    std::cout << "MPFT v0.3.0\n\n";
+    std::cout << "MPFT v0.5.0\n\n";
 
     // default parameters
     std::string obs_path = "primary.obs";
     int param_R = -1;
     std::string obscode_path = "data/ObsCodes.dat";
     std::string spice_path = "data/SPICE/";
-    int param_maxiter = 100;
+    int param_maxiter = 20;
     std::string out_path = "quasi-MPEC.txt";
 
     // handle command line arguments
@@ -1435,16 +1583,20 @@ int main(int argc, char *argv[])
     }
 
     std::cout << "Loading SPICE kernels... ";
+    /*
     std::string naif_path = spice_path + "/naif0012.tls";
     std::string de440_path = spice_path + "/de440.bsp";
     std::string pck_path = spice_path + "/pck00011.tpc";
     std::string earthfile_path = spice_path + "/earth_000101_250316_241218.bpc";
 
     // load SPICE kernels
+
     furnsh_c(naif_path.c_str());
     furnsh_c(de440_path.c_str());
     furnsh_c(pck_path.c_str());
     furnsh_c(earthfile_path.c_str());
+    */
+    loadAllKernels(spice_path);
     std::cout << "Done\n";
 
     // read and parse MPC ObsCodes
