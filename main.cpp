@@ -16,6 +16,11 @@ extern "C"
     #include "SpiceUsr.h"
 }
 
+// nlohmann/json is licensed under the terms of MIT License
+// see https://github.com/nlohmann/json/blob/develop/LICENSE.MIT
+#include "nlohmann/json.hpp"
+using json = nlohmann::json;
+
 // kilometers per astronomic unit
 double AU = 149597870.7;
 
@@ -1366,6 +1371,35 @@ std::tuple<std::vector<std::string>, std::vector<std::string>, std::vector<std::
     return generateEphemeris(epoch_et, p0, v0, target_ets);
 }
 
+int writeDataJSON(std::string perm, std::string prov, std::vector<double> orbel, Vec3 p, Vec3 v, double epoch_JD, std::string outname = "mp.json")
+{
+    json j;
+    j["permanent_designation"] = perm;
+    j["provisional_designation"] = prov;
+    
+    j["orbital_elements"]["a"] = orbel[0] / AU;
+    j["orbital_elements"]["e"] = orbel[1];
+    j["orbital_elements"]["i"] = orbel[2];
+    j["orbital_elements"]["node"] = orbel[3];
+    j["orbital_elements"]["peri"] = orbel[4];
+    j["orbital_elements"]["M"] = orbel[6]; // 5 is true anomaly
+
+    j["state_vectors"]["x"] = p.x;
+    j["state_vectors"]["y"] = p.y;
+    j["state_vectors"]["z"] = p.z;
+    j["state_vectors"]["vx"] = v.x;
+    j["state_vectors"]["vy"] = v.y;
+    j["state_vectors"]["vz"] = v.z;
+
+    j["epoch"] = epoch_JD;
+
+    std::ofstream out(outname);
+    out << j.dump(4); // indentation (pretty printing)
+    out.close();
+
+    return 0;
+}
+
 // styles the output in the form of a Minor Planet Center MPEC for familiarity (and therefore easy reading)
 void printQuasiMPEC(std::vector<double> orbital_elements,
     std::vector<Observation> observations,
@@ -1503,7 +1537,7 @@ void printHelpMsg()
     std::cout << "Your input observations (astrometry) in Obs80 format (MPC's 80-column format):\n";
     std::cout << "primary.obs\n\n";
     std::cout << "Optional arguments are as follows (can be entered in any order):\n\n";
-    std::cout << "-obs <Obs80_input_file> -obscode <obscode_file> -spice <spice_folder_path> -R <initial_object_dist_to_observer_guess (AU)> -maxiter <max_orbit_refinement_iterations> -out <output_file_path>\n\n";
+    std::cout << "-obs <Obs80_input_file> -obscode <obscode_file> -spice <spice_folder_path> -R <initial_object_dist_to_observer_guess (AU)> -maxiter <max_orbit_refinement_iterations> -out <output_file_path> -json <output_json_path>\n\n";
     std::cout << "If an initial distance guess is not given, the program tries several guesses and tries to pick the best one.\n";
     std::cout << "Default number of maximum iterations is 20. Output file will be named quasi-MPEC.txt by default.\n\n";
     std::cout << "MPFT was developed by H. A. Guler.\n\n";
@@ -1512,7 +1546,7 @@ void printHelpMsg()
 
 int main(int argc, char *argv[])
 {
-    std::cout << "MPFT v0.5.0\n\n";
+    std::cout << "MPFT v0.6.0\n\n";
 
     // default parameters
     std::string obs_path = "primary.obs";
@@ -1521,6 +1555,7 @@ int main(int argc, char *argv[])
     std::string spice_path = "data/SPICE/";
     int param_maxiter = 20;
     std::string out_path = "quasi-MPEC.txt";
+    std::string out_json = "mp.json";
 
     // handle command line arguments
     // there is a more compact version of doing this but this is easier for my brain
@@ -1551,6 +1586,10 @@ int main(int argc, char *argv[])
         {
             argtype = 5;
         }
+        else if (!strcmp(argv[idx_cmd], "-json"))
+        {
+            argtype = 6;
+        }
         else if (!strcmp(argv[idx_cmd], "-h") || !strcmp(argv[idx_cmd], "--help")) // two dashes because people are more used to it
         {
             printHelpMsg();
@@ -1578,24 +1617,14 @@ int main(int argc, char *argv[])
             case 5:
                 out_path = argv[idx_cmd];
                 break;
+            case 6:
+                out_json = argv[idx_cmd];
+                break;
             }
         }
     }
 
     std::cout << "Loading SPICE kernels... ";
-    /*
-    std::string naif_path = spice_path + "/naif0012.tls";
-    std::string de440_path = spice_path + "/de440.bsp";
-    std::string pck_path = spice_path + "/pck00011.tpc";
-    std::string earthfile_path = spice_path + "/earth_000101_250316_241218.bpc";
-
-    // load SPICE kernels
-
-    furnsh_c(naif_path.c_str());
-    furnsh_c(de440_path.c_str());
-    furnsh_c(pck_path.c_str());
-    furnsh_c(earthfile_path.c_str());
-    */
     loadAllKernels(spice_path);
     std::cout << "Done\n";
 
@@ -1651,5 +1680,9 @@ int main(int argc, char *argv[])
         printQuasiMPEC(orbital_elements, observations, obscode_map, epoch_JD, orbital_period, p0, v0, outfile);
         outfile.close();
     }
+
+    std::cout << "\nWriting minor planet data to JSON... ";
+    writeDataJSON(observations[0].perm, observations[0].prov, orbital_elements, p0, v0, epoch_JD, out_json);
+
     std::cout << "Done. Program end.\n";
 }
