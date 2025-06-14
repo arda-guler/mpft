@@ -11,9 +11,9 @@
 #include <unordered_map>
 #include <algorithm>
 
-extern "C" 
+extern "C"
 {
-    #include "SpiceUsr.h"
+#include "SpiceUsr.h"
 }
 
 // nlohmann/json is licensed under the terms of MIT License
@@ -76,7 +76,7 @@ struct Vec3 // extremely self-explanatory
         z = sin(deg2rad(DEC));
     }
 
-    Vec3 operator+(const Vec3& other) const 
+    Vec3 operator+(const Vec3& other) const
     {
         return { x + other.x, y + other.y, z + other.z };
     }
@@ -86,7 +86,7 @@ struct Vec3 // extremely self-explanatory
         return { x - other.x, y - other.y, z - other.z };
     }
 
-    Vec3 operator*(double scalar) const 
+    Vec3 operator*(double scalar) const
     {
         return { x * scalar, y * scalar, z * scalar };
     }
@@ -96,7 +96,7 @@ struct Vec3 // extremely self-explanatory
         return { x / scalar, y / scalar, z / scalar };
     }
 
-    Vec3& operator+=(const Vec3& other) 
+    Vec3& operator+=(const Vec3& other)
     {
         x += other.x; y += other.y; z += other.z;
         return *this;
@@ -105,8 +105,8 @@ struct Vec3 // extremely self-explanatory
     Vec3 cross(const Vec3& other)
     {
         return Vec3(y * other.z - z * other.y,
-                    z * other.x - x * other.z,
-                    x * other.y - y * other.x);
+            z * other.x - x * other.z,
+            x * other.y - y * other.x);
     }
 
     double dot(const Vec3& other)
@@ -132,7 +132,7 @@ struct Vec3 // extremely self-explanatory
 
 // represents a physical gravitational field generating body (Sun + planets usually)
 // used for orbit propagation
-struct Body 
+struct Body
 {
     std::string name;
     double GM;
@@ -148,7 +148,7 @@ struct Body
 
 // represents an object which does not generate a notable gravitational field and is
 // propagated via Yoshida8 instead of retrieving through SPICE
-struct MinorPlanet 
+struct MinorPlanet
 {
     Vec3 pos;
     Vec3 vel;
@@ -265,7 +265,7 @@ using StateMatrix = std::array<std::array<std::array<double, 3>, 2>, 9>; // I do
 // --- --- --- STRUCT AND CLASS DEFINITIONS --- --- --- [END]
 
 // --- --- --- MISC UTILS --- --- --- [START]
-void loadAllKernels(const std::string& directory) 
+void loadAllKernels(const std::string& directory)
 {
     std::string search_path = directory + "\\*.*";
     WIN32_FIND_DATAA fd;
@@ -439,7 +439,7 @@ std::vector<double> stateVector2Kepler(Vec3 r_equ, Vec3 v_equ, SpiceDouble et, d
 
         mean_anomaly = rad2deg(E - eccentricity * sin(E));
     }
-    else if(eccentricity > 1)
+    else if (eccentricity > 1)
     {
         double F = 2 * atanh(tan(deg2rad(true_anomaly) / 2) * sqrt((eccentricity - 1) / (eccentricity + 1)));
         mean_anomaly = rad2deg(eccentricity * sinh(F) - F);
@@ -453,7 +453,7 @@ std::vector<double> stateVector2Kepler(Vec3 r_equ, Vec3 v_equ, SpiceDouble et, d
 
 }
 
-std::vector<double> cartezian2spherical (Vec3 v)
+std::vector<double> cartezian2spherical(Vec3 v)
 {
     double d = v.mag();
     double RA = rad2deg(atan2(v.y, v.x));
@@ -697,14 +697,14 @@ StateMatrix getSolarSystemStates(SpiceDouble et)
 
     StateMatrix states{};
 
-    for (int i = 0; i < 9; ++i) 
+    for (int i = 0; i < 9; ++i)
     {
         SpiceDouble state[6];
         SpiceDouble lt;
 
         spkezr_c(bodies[i], et, "J2000", "NONE", "SOLAR SYSTEM BARYCENTER", state, &lt);
 
-        for (int j = 0; j < 3; ++j) 
+        for (int j = 0; j < 3; ++j)
         {
             states[i][0][j] = state[j];     // Position (km)
             states[i][1][j] = state[j + 3]; // Velocity (km/s)
@@ -754,7 +754,7 @@ void stepYoshida8(MinorPlanet& mp, std::vector<Body>& bodies, SpiceDouble date0_
 
     SpiceDouble et = date0_et;
 
-    for (int i = 0; i < 15; ++i) 
+    for (int i = 0; i < 15; ++i)
     {
         mp.pos += mp.vel * (cs[i] * dt);
 
@@ -762,7 +762,7 @@ void stepYoshida8(MinorPlanet& mp, std::vector<Body>& bodies, SpiceDouble date0_
         et += cs[i] * dt;
 
         // Update body positions
-        for (Body& body : bodies) 
+        for (Body& body : bodies)
         {
             SpiceDouble state[6], lt;
             spkezr_c(body.name.c_str(), et, "J2000", "NONE", "SOLAR SYSTEM BARYCENTER", state, &lt);
@@ -951,7 +951,7 @@ Vec3 guessCircularV0(Vec3 p0, std::vector<Observation> obs_all, std::unordered_m
 
     // get an acceleration guess at midpoint
     double mu = 1.3271244004193938E+11; // Sun standrad gravitational parameter
-    Vec3 a_mid = p_mid.normalized() * (- mu) / (r * r);
+    Vec3 a_mid = p_mid.normalized() * (-mu) / (r * r);
 
     // time it takes to go from observation 1 to 2
     double t_diff = o1.et - obs_all[0].et;
@@ -960,7 +960,177 @@ Vec3 guessCircularV0(Vec3 p0, std::vector<Observation> obs_all, std::unordered_m
     return v0;
 }
 
-std::pair<std::vector<double>, std::vector<double>> getResiduals(Vec3 p0, Vec3 v0, std::vector<Observation> obs_all, std::unordered_map<std::string, Observatory>& obscode_map)
+// get true state vector at observation time given apparent position
+std::vector<Vec3> computeTrueStateGeocentric(Vec3 pa, Vec3 va, SpiceDouble et_obs,  double tol = 1, int MAXITER = 5)
+{
+    SpiceDouble lt_ignore;
+    SpiceDouble obsv_sv[6];
+    spkezr_c("EARTH", et_obs, "J2000", "NONE", "SOLAR SYSTEM BARYCENTER", obsv_sv, &lt_ignore);
+    Vec3 obsv_pos = Vec3(obsv_sv[0], obsv_sv[1], obsv_sv[2]); // this is known
+
+    double c = 299792.458; // [km s-1] speed of light
+
+    Vec3 pt = pa;
+    Vec3 vt = va;
+
+    double lt = (pa - obsv_pos).mag() / c; // initial light time guess
+    double lt_prev = 0;
+    for (int idx_iter = 0; idx_iter < MAXITER; idx_iter++)
+    {
+
+        /*
+        *
+        *  Do NOT propagate this with a full orbit propagator! Way too expensive!
+        *
+        std::vector<Vec3> sv_true = propagate(pa, va, et_obs, et_obs + lt, -1);
+        pt = sv_true[0];
+        vt = sv_true[1];
+        *
+        * Just use a linear approximation, it's good enough for nearly all cases
+        *
+        */
+        pt = pa + va * lt;
+
+        lt = (pt - obsv_pos).mag() / c;
+        double lt_err = abs(lt - lt_prev);
+
+        if (lt_err < tol)
+        {
+            break;
+        }
+
+        lt_prev = lt;
+    }
+
+    return { pt, vt };
+}
+
+// get apparent position at given observation time and true position
+std::vector<Vec3> computeApparentStateGeocentric(Vec3 pt, Vec3 vt, SpiceDouble et_obs, double tol = 1, int MAXITER = 5)
+{
+    SpiceDouble lt_ignore;
+    SpiceDouble obsv_sv[6];
+    spkezr_c("EARTH", et_obs, "J2000", "NONE", "SOLAR SYSTEM BARYCENTER", obsv_sv, &lt_ignore);
+    Vec3 obsv_pos = Vec3(obsv_sv[0], obsv_sv[1], obsv_sv[2]); // this is known
+    double c = 299792.458; // [km s-1] speed of light
+
+    Vec3 pa = pt;
+    Vec3 va = vt;
+
+    double lt = (pt - obsv_pos).mag() / c; // initial light time guess
+    double lt_prev = 0;
+    for (int idx_iter = 0; idx_iter < MAXITER; idx_iter++)
+    {
+        /*
+        *
+        * No no no, full propagation is too expensive for this inner iteration
+        *
+        std::vector<Vec3> sv_apparent = backpropagate(pt, vt, et_obs, et_obs - lt, -1);
+        pa = sv_apparent[0];
+        va = sv_apparent[1];
+        *
+        * just use linear approx., good enough for most cases
+        *
+        */
+        pa = pt - vt * lt;
+
+        lt = (pa - obsv_pos).mag() / c;
+        double lt_err = abs(lt - lt_prev);
+
+        if (lt_err < tol)
+        {
+            break;
+        }
+
+        lt_prev = lt;
+    }
+
+    return { pa, va };
+}
+
+// get true state vector at observation time given apparent position
+std::vector<Vec3> computeTrueState(Vec3 pa, Vec3 va, SpiceDouble et_obs, Observatory& obsv, double tol = 1, int MAXITER = 5)
+{
+    Vec3 obsv_pos = getObserverPos(obsv, et_obs); // this is known
+    double c = 299792.458; // [km s-1] speed of light
+
+    Vec3 pt = pa;
+    Vec3 vt = va;
+
+    double lt = (pa - obsv_pos).mag() / c; // initial light time guess
+    double lt_prev = 0;
+    for (int idx_iter = 0; idx_iter < MAXITER; idx_iter++)
+    {
+
+        /*
+        * 
+        *  Do NOT propagate this with a full orbit propagator! Way too expensive!
+        * 
+        std::vector<Vec3> sv_true = propagate(pa, va, et_obs, et_obs + lt, -1);
+        pt = sv_true[0];
+        vt = sv_true[1];
+        *
+        * Just use a linear approximation, it's good enough for nearly all cases
+        * 
+        */
+        pt = pa + va * lt;
+
+        lt = (pt - obsv_pos).mag() / c;
+        double lt_err = abs(lt - lt_prev);
+
+        if (lt_err < tol)
+        {
+            break;
+        }
+
+        lt_prev = lt;
+    }
+
+    return { pt, vt };
+}
+
+// get apparent position at given observation time and true position
+std::vector<Vec3> computeApparentState(Vec3 pt, Vec3 vt, SpiceDouble et_obs, Observatory& obsv, double tol = 1, int MAXITER = 5)
+{
+    Vec3 obsv_pos = getObserverPos(obsv, et_obs); // this is known
+    double c = 299792.458; // [km s-1] speed of light
+
+    Vec3 pa = pt;
+    Vec3 va = vt;
+
+    double lt = (pt - obsv_pos).mag() / c; // initial light time guess
+    double lt_prev = 0;
+    for (int idx_iter = 0; idx_iter < MAXITER; idx_iter++)
+    {
+        /*
+        * 
+        * No no no, full propagation is too expensive for this inner iteration
+        * 
+        std::vector<Vec3> sv_apparent = backpropagate(pt, vt, et_obs, et_obs - lt, -1);
+        pa = sv_apparent[0];
+        va = sv_apparent[1];
+        *
+        * just use linear approx., good enough for most cases
+        * 
+        */
+        pa = pt - vt * lt;
+
+        lt = (pa - obsv_pos).mag() / c;
+        double lt_err = abs(lt - lt_prev);
+
+        if (lt_err < tol)
+        {
+            break;
+        }
+
+        lt_prev = lt;
+    }
+
+    return { pa, va };
+}
+
+std::pair<std::vector<double>, std::vector<double>> getResiduals(Vec3 p0, Vec3 v0, std::vector<Observation> obs_all, std::unordered_map<std::string, Observatory>& obscode_map,
+    bool planetary_aberration_flag = true)
 {
     Observation o1 = obs_all[0];
 
@@ -970,40 +1140,77 @@ std::pair<std::vector<double>, std::vector<double>> getResiduals(Vec3 p0, Vec3 v
 
     std::vector<double> RA_res;
     std::vector<double> DEC_res;
-    for (int idx_o = 0; idx_o < obs_all.size(); idx_o++)
+
+    if (planetary_aberration_flag) // more expensive, more accurate
     {
-        Observation o = obs_all[idx_o];
+        for (int idx_o = 0; idx_o < obs_all.size(); idx_o++)
+        {
+            Observation o = obs_all[idx_o];
 
-        std::vector<Vec3> prop_res = propagate(p0_temp, v0_temp, et_temp, o.et, -1);
-        Vec3 p_check = prop_res[0];
-        Vec3 v_new = prop_res[1];
-        std::vector<double> RADEC_prop = getRADEC(o.et, obscode_map[o.obs_code], p_check);
+            std::vector<Vec3> prop_res = propagate(p0_temp, v0_temp, et_temp, o.et, -1); // get true position
+            std::vector<Vec3> apparent_res = computeApparentState(prop_res[0], prop_res[1], o.et, obscode_map[o.obs_code]); // get apparent position
 
-        double RA_prop = RADEC_prop[0];
-        double DEC_prop = RADEC_prop[1];
+            Vec3 p_check = apparent_res[0];
+            Vec3 v_new = apparent_res[1];
+            std::vector<double> RADEC_prop = getRADEC(o.et, obscode_map[o.obs_code], p_check);
 
-        double RA_diff = o.RA - RA_prop;
-        if (RA_diff > 180.0) RA_diff -= 360.0;
-        else if (RA_diff < -180.0) RA_diff += 360.0;
+            double RA_prop = RADEC_prop[0];
+            double DEC_prop = RADEC_prop[1];
 
-        double RA_err = RA_diff * 3600;
-        double DEC_err = (o.DEC - DEC_prop) * 3600;
+            double RA_diff = o.RA - RA_prop;
+            if (RA_diff > 180.0) RA_diff -= 360.0;
+            else if (RA_diff < -180.0) RA_diff += 360.0;
 
-        RA_res.push_back(RA_err);
-        DEC_res.push_back(DEC_err);
+            double RA_err = RA_diff * 3600;
+            double DEC_err = (o.DEC - DEC_prop) * 3600;
 
-        p0_temp = p_check;
-        v0_temp = v_new;
-        et_temp = o.et;
+            RA_res.push_back(RA_err);
+            DEC_res.push_back(DEC_err);
+
+            p0_temp = prop_res[0];
+            v0_temp = prop_res[1];
+            et_temp = o.et;
+        }
     }
+    else
+    {
+        for (int idx_o = 0; idx_o < obs_all.size(); idx_o++)
+        {
+            Observation o = obs_all[idx_o];
+
+            std::vector<Vec3> prop_res = propagate(p0_temp, v0_temp, et_temp, o.et, -1);
+            Vec3 p_check = prop_res[0];
+            Vec3 v_new = prop_res[1];
+            std::vector<double> RADEC_prop = getRADEC(o.et, obscode_map[o.obs_code], p_check);
+
+            double RA_prop = RADEC_prop[0];
+            double DEC_prop = RADEC_prop[1];
+
+            double RA_diff = o.RA - RA_prop;
+            if (RA_diff > 180.0) RA_diff -= 360.0;
+            else if (RA_diff < -180.0) RA_diff += 360.0;
+
+            double RA_err = RA_diff * 3600;
+            double DEC_err = (o.DEC - DEC_prop) * 3600;
+
+            RA_res.push_back(RA_err);
+            DEC_res.push_back(DEC_err);
+
+            p0_temp = p_check;
+            v0_temp = v_new;
+            et_temp = o.et;
+        }
+    }
+ 
 
     return std::pair<std::vector<double>, std::vector<double>> {RA_res, DEC_res};
 }
 
 // gets observations and state vectors, returns RA-DEC error score
-double getErrorRADEC(Vec3 p0, Vec3 v0, std::vector<Observation> obs_all, std::unordered_map<std::string, Observatory>& obscode_map)
+double getErrorRADEC(Vec3 p0, Vec3 v0, std::vector<Observation> obs_all, std::unordered_map<std::string, Observatory>& obscode_map,
+    bool planetary_aberration_flag = true)
 {
-    std::pair<std::vector<double>, std::vector<double>> residuals = getResiduals(p0, v0, obs_all, obscode_map);
+    std::pair<std::vector<double>, std::vector<double>> residuals = getResiduals(p0, v0, obs_all, obscode_map, planetary_aberration_flag);
     std::vector<double> RA_res = residuals.first;
     std::vector<double> DEC_res = residuals.second;
 
@@ -1024,14 +1231,14 @@ std::vector<Vec3> initialGuess(std::vector<Observation> obs_all, std::unordered_
     {
         // test for best fitting observer - object distance
         double R1_ts[63] = { 0.1 * AU, 0.2 * AU, 0.3 * AU, 0.5 * AU, 0.75 * AU, 1 * AU,
-                            1.25 * AU, 1.5 * AU, 1.75 * AU, 2 * AU, 2.25 * AU, 2.5 * AU, 
+                            1.25 * AU, 1.5 * AU, 1.75 * AU, 2 * AU, 2.25 * AU, 2.5 * AU,
                             2.75 * AU, 3 * AU, 3.25 * AU, 3.5 * AU, 3.75 * AU, 4 * AU,
                             5 * AU, 6 * AU, 7 * AU, 8 * AU, 9 * AU, 10 * AU, 11 * AU, 12 * AU,
                             13 * AU, 14 * AU, 15 * AU, 16 * AU, 18 * AU, 20 * AU, 22 * AU, 24 * AU,
                             26 * AU, 28 * AU, 29 * AU, 30 * AU, 31 * AU, 32 * AU, 33 * AU, 34 * AU,
                             35 * AU, 36 * AU, 37 * AU, 38 * AU, 39 * AU, 40 * AU, 41 * AU, 42 * AU,
                             43 * AU, 44 * AU, 45 * AU, 46 * AU, 47 * AU, 48 * AU, 49 * AU, 50 * AU,
-                            51 * AU, 52 * AU, 53 * AU, 54 * AU, 55 * AU};
+                            51 * AU, 52 * AU, 53 * AU, 54 * AU, 55 * AU };
         double R_err_prev = 1E+15; // arbitrary large number
 
         for (int idx_Rt = 0; idx_Rt < 63; idx_Rt++)
@@ -1041,7 +1248,7 @@ std::vector<Vec3> initialGuess(std::vector<Observation> obs_all, std::unordered_
             Vec3 v0 = guessCircularV0(p0, obs_all, obscode_map);
 
             // check current error
-            double err_val = getErrorRADEC(p0, v0, obs_all, obscode_map);
+            double err_val = getErrorRADEC(p0, v0, obs_all, obscode_map, false); // planetary abberation doesn't matter all that much at this stage
 
             if (err_val < R_err_prev)
             {
@@ -1064,7 +1271,7 @@ std::vector<Vec3> initialGuess(std::vector<Observation> obs_all, std::unordered_
 std::vector<double> computeGradient(Vec3 p0, Vec3 v0, std::vector<Observation> obs_all, std::unordered_map<std::string, Observatory>& obscode_map)
 {
     double err0 = getErrorRADEC(p0, v0, obs_all, obscode_map);
-    std::vector<double> grad = {0, 0, 0, 0, 0, 0};
+    std::vector<double> grad = { 0, 0, 0, 0, 0, 0 };
 
     double eps_vel = 1;
     double eps_pos = 1;
@@ -1082,7 +1289,7 @@ std::vector<double> computeGradient(Vec3 p0, Vec3 v0, std::vector<Observation> o
 
 std::vector<std::array<double, 6>> computeJacobian(Vec3 p0, Vec3 v0, std::vector<Observation> obs_all,
     std::unordered_map<std::string, Observatory>& obscode_map,
-    double eps_v = 1e-2, double eps_p = 1e3) 
+    double eps_v = 1e-2, double eps_p = 1e3)
 {
     int N = obs_all.size();
     std::vector<std::array<double, 6>> J(2 * N);  // 2 residuals per observation
@@ -1090,7 +1297,7 @@ std::vector<std::array<double, 6>> computeJacobian(Vec3 p0, Vec3 v0, std::vector
     std::pair<std::vector<double>, std::vector<double>> base_pair = getResiduals(p0, v0, obs_all, obscode_map);
     std::vector<double> base_residuals = flattenResiduals(base_pair);
 
-    for (int j = 0; j < 3; ++j) 
+    for (int j = 0; j < 3; ++j)
     {
         // perturb velocity
         Vec3 dv(0, 0, 0);
@@ -1104,7 +1311,7 @@ std::vector<std::array<double, 6>> computeJacobian(Vec3 p0, Vec3 v0, std::vector
         std::vector<double> res_plus_v = flattenResiduals(plus_pair_v);
         std::vector<double> res_minus_v = flattenResiduals(minus_pair_v);
 
-        for (int i = 0; i < 2 * N; ++i) 
+        for (int i = 0; i < 2 * N; ++i)
         {
             J[i][j] = (res_plus_v[i] - res_minus_v[i]) / (2.0 * eps_v);
         }
@@ -1121,7 +1328,7 @@ std::vector<std::array<double, 6>> computeJacobian(Vec3 p0, Vec3 v0, std::vector
         std::vector<double> res_plus_p = flattenResiduals(plus_pair_p);
         std::vector<double> res_minus_p = flattenResiduals(minus_pair_p);
 
-        for (int i = 0; i < 2 * N; ++i) 
+        for (int i = 0; i < 2 * N; ++i)
         {
             J[i][j + 3] = (res_plus_p[i] - res_minus_p[i]) / (2.0 * eps_p);
         }
@@ -1130,19 +1337,19 @@ std::vector<std::array<double, 6>> computeJacobian(Vec3 p0, Vec3 v0, std::vector
     return J;
 }
 
-std::array<double, 6> computeGaussNewtonStep(std::vector<std::array<double, 6>>& J, std::vector<double>& r) 
+std::array<double, 6> computeGaussNewtonStep(std::vector<std::array<double, 6>>& J, std::vector<double>& r)
 {
     int M = J.size();
 
     double JTJ[6][6] = {};
     std::array<double, 6> JTr = {};
 
-    for (int i = 0; i < M; ++i) 
+    for (int i = 0; i < M; ++i)
     {
-        for (int j = 0; j < 6; ++j) 
+        for (int j = 0; j < 6; ++j)
         {
             JTr[j] += J[i][j] * r[i];
-            for (int k = 0; k < 6; ++k) 
+            for (int k = 0; k < 6; ++k)
             {
                 JTJ[j][k] += J[i][j] * J[i][k];
             }
@@ -1160,33 +1367,33 @@ std::array<double, 6> computeGaussNewtonStep(std::vector<std::array<double, 6>>&
     }
 
     // Gaussian elimination
-    for (int i = 0; i < 6; ++i) 
+    for (int i = 0; i < 6; ++i)
     {
         int pivot = i;
-        for (int j = i + 1; j < 6; ++j) 
+        for (int j = i + 1; j < 6; ++j)
         {
-            if (std::fabs(A[j][i]) > std::fabs(A[pivot][i])) 
+            if (std::fabs(A[j][i]) > std::fabs(A[pivot][i]))
             {
                 pivot = j;
             }
         }
-        for (int j = 0; j < 7; ++j) 
+        for (int j = 0; j < 7; ++j)
         {
             std::swap(A[i][j], A[pivot][j]);
         }
 
         double div = A[i][i];
-        for (int j = i; j < 7; ++j) 
+        for (int j = i; j < 7; ++j)
         {
             A[i][j] /= div;
         }
 
-        for (int j = 0; j < 6; ++j) 
+        for (int j = 0; j < 6; ++j)
         {
-            if (j != i) 
+            if (j != i)
             {
                 double f = A[j][i];
-                for (int k = i; k < 7; ++k) 
+                for (int k = i; k < 7; ++k)
                 {
                     A[j][k] -= f * A[i][k];
                 }
@@ -1195,7 +1402,7 @@ std::array<double, 6> computeGaussNewtonStep(std::vector<std::array<double, 6>>&
     }
 
     std::array<double, 6> dx;
-    for (int i = 0; i < 6; ++i) 
+    for (int i = 0; i < 6; ++i)
     {
         dx[i] = A[i][6];
     }
@@ -1220,6 +1427,11 @@ std::vector<Vec3> determineOrbit(std::vector<Observation> obs_all, std::unordere
     std::vector<Vec3> initialGuessSv = initialGuess(obs_all, obscode_map, R1);
     Vec3 p0 = initialGuessSv[0];
     Vec3 v0 = initialGuessSv[1];
+
+    // get true state (initial guess is for an apparent position)
+    std::vector<Vec3> sv_true = computeTrueState(p0, v0, o1.et, obscode_map[o1.obs_code]);
+    p0 = sv_true[0];
+    v0 = sv_true[1];
 
     double err_val = getErrorRADEC(p0, v0, obs_all, obscode_map);
 
@@ -1297,6 +1509,7 @@ std::tuple<std::vector<std::string>, std::vector<std::string>, std::vector<std::
         if (ts[idx_tdiff] > t0)
         {
             std::vector<Vec3> sv_prop = propagate(p0, v0, t0, ts[idx_tdiff], -1);
+            sv_prop = computeApparentStateGeocentric(sv_prop[0], sv_prop[1], ts[idx_tdiff]);
             Vec3 p_t = sv_prop[0];
             std::vector<double> RADEC = getGeocentricRADEC(ts[idx_tdiff], p_t);
             RA_result.push_back(RADEC[0]);
@@ -1304,13 +1517,15 @@ std::tuple<std::vector<std::string>, std::vector<std::string>, std::vector<std::
         }
         else if (ts[idx_tdiff] == t0) // the date is epoch date
         {
-            std::vector<double> RADEC = getGeocentricRADEC(ts[idx_tdiff], p0);
+            std::vector<Vec3> sv_prop = computeApparentStateGeocentric(p0, v0, t0);
+            std::vector<double> RADEC = getGeocentricRADEC(ts[idx_tdiff], sv_prop[0]);
             RA_result.push_back(RADEC[0]);
             DEC_result.push_back(RADEC[1]);
         }
         else
         {
             std::vector<Vec3> sv_prop = backpropagate(p0, v0, t0, ts[idx_tdiff], 1);
+            sv_prop = computeApparentStateGeocentric(sv_prop[0], sv_prop[1], ts[idx_tdiff]);
             Vec3 p_t = sv_prop[0];
             std::vector<double> RADEC = getGeocentricRADEC(ts[idx_tdiff], p_t);
             RA_result.push_back(RADEC[0]);
@@ -1376,7 +1591,7 @@ int writeDataJSON(std::string perm, std::string prov, std::vector<double> orbel,
     json j;
     j["permanent_designation"] = perm;
     j["provisional_designation"] = prov;
-    
+
     j["orbital_elements"]["a"] = orbel[0] / AU;
     j["orbital_elements"]["e"] = orbel[1];
     j["orbital_elements"]["i"] = orbel[2];
@@ -1455,6 +1670,7 @@ void printQuasiMPEC(std::vector<double> orbital_elements,
     double n = 360.0 / orbital_period * 86400.0; // deg/day
     double q = (1 - orbital_elements[1]) * orbital_elements[0] / AU; // perihelion dist.
 
+    // getResiduals() calculates apparent positions inside by taking true p0, v0
     std::pair<std::vector<double>, std::vector<double>> residuals = getResiduals(p0, v0, observations, observatories);
     std::vector<double> RA_res = residuals.first;
     std::vector<double> DEC_res = residuals.second;
@@ -1519,7 +1735,6 @@ void printQuasiMPEC(std::vector<double> orbital_elements,
     out << "M. P. F. T. Software         (C/) Copyleft MPFT Authors              Quasi-MPEC\n";
 }
 
-
 void printHelpMsg()
 {
     std::cout << " === MPFT HELP ===\n";
@@ -1544,9 +1759,9 @@ void printHelpMsg()
     std::cout << "MPFT is licensed under GNU General Public License version 2.0 (GPL-2.0 License)\n\n";
 }
 
-int main(int argc, char *argv[])
+int main(int argc, char* argv[])
 {
-    std::cout << "MPFT v0.6.0\n\n";
+    std::cout << "MPFT v0.7.0\n\n";
 
     // default parameters
     std::string obs_path = "primary.obs";
@@ -1595,7 +1810,7 @@ int main(int argc, char *argv[])
             printHelpMsg();
             return 0;
         }
-        else 
+        else
         {
             switch (argtype)
             {
@@ -1660,7 +1875,7 @@ int main(int argc, char *argv[])
     std::vector<double> orbital_elements = stateVector2Kepler(p0_final, v0_final, JDToEt(epoch_JD));
     // orbital_elements = {sma, eccentricity, inclination, omega, arg_periapsis, true_anomaly, mean_anomaly}
     // sma in km, angles in degrees
-    
+
     // 1.3271244004193938E+11 = Sun GM
     double orbital_period = 2 * pi_c() * sqrt(orbital_elements[0] * orbital_elements[0] * orbital_elements[0] / 1.3271244004193938E+11);
     double orbit_traverse_fraction = orbital_elements[6] / 360;
