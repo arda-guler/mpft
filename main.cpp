@@ -36,6 +36,20 @@ double deg2rad(double x)
     return x * pi_c() / 180;
 }
 
+double clamp(double v, double lo, double hi)
+{
+    if (lo < v && v < hi)
+    {
+        return v;
+    }
+    else if (v < lo)
+    {
+        return lo;
+    }
+    
+    return hi;
+}
+
 // --- --- --- STRUCT AND CLASS DEFINITIONS --- --- --- [START]
 struct Vec3 // extremely self-explanatory
 {
@@ -1263,6 +1277,56 @@ double getErrorRADEC(Vec3 p0, Vec3 v0, std::vector<Observation> obs_all, std::un
     return err_val;
 }
 
+// feed apparent position to this function
+std::pair<double, double> computePhaseAndElongationGeocentric(Vec3 pa, SpiceDouble et)
+{
+    SpiceDouble sv_sun[6], lt_ignore;
+    spkezr_c("SUN", et, "J2000", "NONE", "SOLAR SYSTEM BARYCENTER", sv_sun, &lt_ignore);
+    Vec3 p_sun = Vec3(sv_sun[0], sv_sun[1], sv_sun[2]);
+
+    SpiceDouble sv_earth[6];
+    spkezr_c("EARTH", et, "J2000", "NONE", "SOLAR SYSTEM BARYCENTER", sv_earth, &lt_ignore);
+    Vec3 p_earth = Vec3(sv_earth[0], sv_earth[1], sv_earth[2]);
+
+    Vec3 obj_to_sun = p_sun - pa;
+    Vec3 obj_to_obs = p_earth - pa;
+
+    double cos_phase = obj_to_sun.normalized().dot(obj_to_obs.normalized());
+    double phase_angle_deg = rad2deg(acos(clamp(cos_phase, -1.0, 1.0)));
+
+    Vec3 obs_to_sun = p_sun - p_earth;
+    Vec3 obs_to_obj = pa - p_earth;
+
+    double cos_elong = obs_to_sun.normalized().dot(obs_to_obj.normalized());
+    double elongation_deg = rad2deg(acos(clamp(cos_elong, -1.0, 1.0)));
+
+    return { phase_angle_deg, elongation_deg };
+}
+
+// feed apparent position to this function
+std::pair<double, double> computePhaseAndElongation(Vec3 pa, SpiceDouble et, Observatory& obsv)
+{
+    SpiceDouble sv_sun[6], lt_ignore;
+    spkezr_c("SUN", et, "J2000", "NONE", "SOLAR SYSTEM BARYCENTER", sv_sun, &lt_ignore);
+    Vec3 p_sun = Vec3(sv_sun[0], sv_sun[1], sv_sun[2]);
+
+    Vec3 p_obsv = getObserverPos(obsv, et);
+
+    Vec3 obj_to_sun = p_sun - pa;
+    Vec3 obj_to_obsv = p_obsv - pa;
+
+    double cos_phase = obj_to_sun.normalized().dot(obj_to_obsv.normalized());
+    double phase_angle_deg = rad2deg(acos(clamp(cos_phase, -1.0, 1.0)));
+
+    Vec3 obs_to_sun = p_sun - p_obsv;
+    Vec3 obsv_to_obj = pa - p_obsv;
+
+    double cos_elong = obs_to_sun.normalized().dot(obsv_to_obj.normalized());
+    double elongation_deg = rad2deg(acos(clamp(cos_elong, -1.0, 1.0)));
+
+    return { phase_angle_deg, elongation_deg };
+}
+
 std::vector<Vec3> initialGuess(std::vector<Observation> obs_all, std::unordered_map<std::string, Observatory>& obscode_map, double R1)
 {
     Observation o1 = obs_all[0];
@@ -1539,10 +1603,13 @@ std::pair<std::vector<Vec3>, double> propagateToNextMidnight(Vec3 p0, Vec3 v0, S
     return { propagate(p0, v0, t0, t1, -1), JD_1 };
 }
 
-std::tuple<std::vector<std::string>, std::vector<std::string>, std::vector<std::string>> generateEphemeris(SpiceDouble t0, Vec3 p0, Vec3 v0, std::vector<SpiceDouble> ts)
+std::tuple<std::vector<std::string>, std::vector<std::string>, std::vector<std::string>, std::vector<std::string>, std::vector<std::string>> 
+    generateEphemeris(SpiceDouble t0, Vec3 p0, Vec3 v0, std::vector<SpiceDouble> ts)
 {
     std::vector<double> RA_result;
     std::vector<double> DEC_result;
+    std::vector<double> phase_result;
+    std::vector<double> elongation_result;
 
     for (int idx_tdiff = 0; idx_tdiff < ts.size(); idx_tdiff++)
     {
@@ -1554,6 +1621,9 @@ std::tuple<std::vector<std::string>, std::vector<std::string>, std::vector<std::
             std::vector<double> RADEC = getGeocentricRADEC(ts[idx_tdiff], p_t);
             RA_result.push_back(RADEC[0]);
             DEC_result.push_back(RADEC[1]);
+            std::pair<double, double> phase_elong = computePhaseAndElongationGeocentric(p_t, ts[idx_tdiff]);
+            phase_result.push_back(phase_elong.first);
+            elongation_result.push_back(phase_elong.second);
         }
         else if (ts[idx_tdiff] == t0) // the date is epoch date
         {
@@ -1561,6 +1631,9 @@ std::tuple<std::vector<std::string>, std::vector<std::string>, std::vector<std::
             std::vector<double> RADEC = getGeocentricRADEC(ts[idx_tdiff], sv_prop[0]);
             RA_result.push_back(RADEC[0]);
             DEC_result.push_back(RADEC[1]);
+            std::pair<double, double> phase_elong = computePhaseAndElongationGeocentric(sv_prop[0], ts[idx_tdiff]);
+            phase_result.push_back(phase_elong.first);
+            elongation_result.push_back(phase_elong.second);
         }
         else
         {
@@ -1570,6 +1643,9 @@ std::tuple<std::vector<std::string>, std::vector<std::string>, std::vector<std::
             std::vector<double> RADEC = getGeocentricRADEC(ts[idx_tdiff], p_t);
             RA_result.push_back(RADEC[0]);
             DEC_result.push_back(RADEC[1]);
+            std::pair<double, double> phase_elong = computePhaseAndElongationGeocentric(p_t, ts[idx_tdiff]);
+            phase_result.push_back(phase_elong.first);
+            elongation_result.push_back(phase_elong.second);
         }
     }
 
@@ -1577,6 +1653,8 @@ std::tuple<std::vector<std::string>, std::vector<std::string>, std::vector<std::
     std::vector<std::string> RA_hms;
     std::vector<std::string> DEC_Dms;
     std::vector<std::string> dates;
+    std::vector<std::string> phase_p2;
+    std::vector<std::string> elong_p2;
 
     for (int idx_result = 0; idx_result < RA_result.size(); idx_result++)
     {
@@ -1585,12 +1663,40 @@ std::tuple<std::vector<std::string>, std::vector<std::string>, std::vector<std::
         dates.push_back(utcstr);
         RA_hms.push_back(RATohms(RA_result[idx_result]));
         DEC_Dms.push_back(DECToDms(DEC_result[idx_result]));
+
+        std::ostringstream oss;
+        oss << std::fixed << std::setprecision(1) << phase_result[idx_result];
+        if (phase_result[idx_result] < 100.0)
+        {
+            oss << " ";
+        }
+        if (phase_result[idx_result] < 10.0)
+        {
+            oss << " ";
+        }
+        std::string phase_str = oss.str();
+        phase_p2.push_back(phase_str);
+
+        std::ostringstream oss2;
+        oss2 << std::fixed << std::setprecision(1) << elongation_result[idx_result];
+        if (elongation_result[idx_result] < 100.0)
+        {
+            oss2 << " ";
+        }
+        if (elongation_result[idx_result] < 10.0)
+        {
+            oss2 << " ";
+        }
+        std::string elong_str = oss2.str();
+        elong_p2.push_back(elong_str);
     }
 
-    return std::tuple<std::vector<std::string>, std::vector<std::string>, std::vector<std::string>> {dates, RA_hms, DEC_Dms};
+    return std::tuple<std::vector<std::string>, std::vector<std::string>, std::vector<std::string>, 
+        std::vector<std::string>, std::vector<std::string>> {dates, RA_hms, DEC_Dms, elong_p2, phase_p2};
 }
 
-std::tuple<std::vector<std::string>, std::vector<std::string>, std::vector<std::string>> generateEphemerisMPEC(Vec3 p0, Vec3 v0, SpiceDouble epoch_et)
+std::tuple<std::vector<std::string>, std::vector<std::string>, std::vector<std::string>, std::vector<std::string>, std::vector<std::string>>
+    generateEphemerisMPEC(Vec3 p0, Vec3 v0, SpiceDouble epoch_et)
 {
     // get today's date with clock at midnight
     std::time_t now = std::time(nullptr);
@@ -1747,7 +1853,8 @@ void printQuasiMPEC(std::vector<double> orbital_elements,
     }
 
     // print out ephemeris
-    std::tuple<std::vector<std::string>, std::vector<std::string>, std::vector<std::string>> ephemeris = generateEphemerisMPEC(p0, v0, JDToEt(epoch_JD));
+    std::tuple<std::vector<std::string>, std::vector<std::string>, std::vector<std::string>, std::vector<std::string>, std::vector<std::string>> 
+        ephemeris = generateEphemerisMPEC(p0, v0, JDToEt(epoch_JD));
 
     out << "\nEphemeris:\n";
     out << objname << "                a,e,i = " << std::fixed << std::setprecision(2) << orbital_elements[0] / AU << ", "
@@ -1755,22 +1862,22 @@ void printQuasiMPEC(std::vector<double> orbital_elements,
         << std::fixed << std::setprecision(0) << orbital_elements[2] << "                   " <<
         "q = " << std::fixed << std::setprecision(4) << q << "\n";
 
-    out << "Date                     R. A. (2000) Decl.\n";
-    out << std::get<0>(ephemeris)[0] << "    " << std::get<1>(ephemeris)[0] << " " << std::get<2>(ephemeris)[0] << "\n";
+    out << "Date                     R. A. (2000) Decl.     Elong.  Phase\n";
+    out << std::get<0>(ephemeris)[0] << "    " << std::get<1>(ephemeris)[0] << " " << std::get<2>(ephemeris)[0] << "   " << std::get<3>(ephemeris)[0] << "   " << std::get<4>(ephemeris)[0] << "\n";
     out << "...\n";
-    out << std::get<0>(ephemeris)[1] << "    " << std::get<1>(ephemeris)[1] << " " << std::get<2>(ephemeris)[1] << "\n";
+    out << std::get<0>(ephemeris)[1] << "    " << std::get<1>(ephemeris)[1] << " " << std::get<2>(ephemeris)[1] << "   " << std::get<3>(ephemeris)[1] << "   " << std::get<4>(ephemeris)[1] << "\n";
     out << "...\n";
-    out << std::get<0>(ephemeris)[2] << "    " << std::get<1>(ephemeris)[2] << " " << std::get<2>(ephemeris)[2] << "\n";
+    out << std::get<0>(ephemeris)[2] << "    " << std::get<1>(ephemeris)[2] << " " << std::get<2>(ephemeris)[2] << "   " << std::get<3>(ephemeris)[2] << "   " << std::get<4>(ephemeris)[2] << "\n";
     out << "...\n";
-    out << std::get<0>(ephemeris)[3] << "    " << std::get<1>(ephemeris)[3] << " " << std::get<2>(ephemeris)[3] << "\n";
-    out << std::get<0>(ephemeris)[4] << "    " << std::get<1>(ephemeris)[4] << " " << std::get<2>(ephemeris)[4] << "\n";
-    out << std::get<0>(ephemeris)[5] << "    " << std::get<1>(ephemeris)[5] << " " << std::get<2>(ephemeris)[5] << "\n";
+    out << std::get<0>(ephemeris)[3] << "    " << std::get<1>(ephemeris)[3] << " " << std::get<2>(ephemeris)[3] << "   " << std::get<3>(ephemeris)[3] << "   " << std::get<4>(ephemeris)[3] << "\n";
+    out << std::get<0>(ephemeris)[4] << "    " << std::get<1>(ephemeris)[4] << " " << std::get<2>(ephemeris)[4] << "   " << std::get<3>(ephemeris)[4] << "   " << std::get<4>(ephemeris)[4] << "\n";
+    out << std::get<0>(ephemeris)[5] << "    " << std::get<1>(ephemeris)[5] << " " << std::get<2>(ephemeris)[5] << "   " << std::get<3>(ephemeris)[5] << "   " << std::get<4>(ephemeris)[5] << "\n";
     out << "...\n";
-    out << std::get<0>(ephemeris)[6] << "    " << std::get<1>(ephemeris)[6] << " " << std::get<2>(ephemeris)[6] << "\n";
+    out << std::get<0>(ephemeris)[6] << "    " << std::get<1>(ephemeris)[6] << " " << std::get<2>(ephemeris)[6] << "   " << std::get<3>(ephemeris)[6] << "   " << std::get<4>(ephemeris)[6] << "\n";
     out << "...\n";
-    out << std::get<0>(ephemeris)[7] << "    " << std::get<1>(ephemeris)[7] << " " << std::get<2>(ephemeris)[7] << "\n";
+    out << std::get<0>(ephemeris)[7] << "    " << std::get<1>(ephemeris)[7] << " " << std::get<2>(ephemeris)[7] << "   " << std::get<3>(ephemeris)[7] << "   " << std::get<4>(ephemeris)[7] << "\n";
     out << "...\n";
-    out << std::get<0>(ephemeris)[8] << "    " << std::get<1>(ephemeris)[8] << " " << std::get<2>(ephemeris)[8] << "\n";
+    out << std::get<0>(ephemeris)[8] << "    " << std::get<1>(ephemeris)[8] << " " << std::get<2>(ephemeris)[8] << "   " << std::get<3>(ephemeris)[8] << "   " << std::get<4>(ephemeris)[8] << "\n";
     out << "\n";
     out << "M. P. F. T. Software         (C/) Copyleft MPFT Authors              Quasi-MPEC\n";
 }
