@@ -833,14 +833,14 @@ std::vector<Vec3> propagate(Vec3 p0, Vec3 v0, SpiceDouble date_init, SpiceDouble
     if (dt <= 0)
     {
         dt = time_interval / 4;
-        while (dt > 10 * 86400)
+        while (dt > 86400)
         {
             dt = dt / 2;
         }
     }
 
-    int N_cycles = (int)(time_interval / dt + 1);
-    SpiceDouble date_final_actual = date_init + N_cycles * dt;
+    int N_cycles = (int)(time_interval / dt);
+    double dt_last = time_interval - N_cycles * dt;
 
     for (int cycle = 0; cycle < N_cycles; cycle++)
     {
@@ -848,9 +848,12 @@ std::vector<Vec3> propagate(Vec3 p0, Vec3 v0, SpiceDouble date_init, SpiceDouble
         stepYoshida8(mp, bodies, cycle_date, dt);
     }
 
-    // final little correction
-    double extra_time = N_cycles * dt - time_interval;
-    mp.pos = mp.pos - mp.vel * extra_time;
+    // fractional last step if needed
+    if (dt_last > 1e-6)
+    {
+        SpiceDouble last_step_date = date_init + N_cycles * dt;
+        stepYoshida8(mp, bodies, last_step_date, dt_last);
+    }
 
     return std::vector<Vec3> {Vec3(mp.pos), Vec3(mp.vel)};
 }
@@ -898,14 +901,14 @@ std::vector<Vec3> backpropagate(Vec3 p0, Vec3 v0, SpiceDouble date_init, SpiceDo
     if (dt >= 0)
     {
         dt = time_interval / 4;
-        while (dt < -10 * 86400)
+        while (dt < 86400)
         {
-            dt = dt / 2;
+            dt /= 2;
         }
     }
 
-    int N_cycles = (int)(time_interval / dt + 1);
-    SpiceDouble date_final_actual = date_init + N_cycles * dt;
+    int N_cycles = (int)(time_interval / dt);
+    double dt_last = time_interval - N_cycles * dt;
 
     for (int cycle = 0; cycle < N_cycles; cycle++)
     {
@@ -913,12 +916,15 @@ std::vector<Vec3> backpropagate(Vec3 p0, Vec3 v0, SpiceDouble date_init, SpiceDo
         stepYoshida8(mp, bodies, cycle_date, dt);
     }
 
-    // final little correction
-    double extra_time = N_cycles * dt - time_interval;
-    mp.pos = mp.pos - mp.vel * extra_time;
+    if (abs(dt_last) > 1e-6)
+    {
+        SpiceDouble last_step_date = date_init + N_cycles * dt;
+        stepYoshida8(mp, bodies, last_step_date, dt_last);
+    }
 
     return std::vector<Vec3> {Vec3(mp.pos), Vec3(mp.vel)};
 }
+
 // --- --- --- ORBIT PROPAGATION --- --- --- [END]
 
 // this guesses an initial velocity assuming observations 1 and 2 are the same distance from the Solar System Barycenter
@@ -1564,9 +1570,6 @@ std::vector<Vec3> determineOrbit(std::vector<Observation> obs_all, std::unordere
             good_fit = true;
             break;
         }
-
-        // get gradient in state-vector-space
-        std::vector<double> grad = computeGradient(p0, v0, obs_all, obscode_map);
 
         std::pair<std::vector<double>, std::vector<double>> residuals = getResiduals(p0, v0, obs_all, obscode_map);
         std::vector<double> r = flattenResiduals(residuals);
