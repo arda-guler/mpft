@@ -1215,7 +1215,7 @@ std::pair<std::vector<double>, std::vector<double>> getResiduals(Vec3 p0, Vec3 v
             if (RA_diff > 180.0) RA_diff -= 360.0;
             else if (RA_diff < -180.0) RA_diff += 360.0;
 
-            double RA_err = RA_diff * 3600;
+            double RA_err = RA_diff * cos(deg2rad(o.DEC)) * 3600.0;
             double DEC_err = (o.DEC - DEC_prop) * 3600;
 
             RA_res.push_back(RA_err);
@@ -1244,7 +1244,7 @@ std::pair<std::vector<double>, std::vector<double>> getResiduals(Vec3 p0, Vec3 v
             if (RA_diff > 180.0) RA_diff -= 360.0;
             else if (RA_diff < -180.0) RA_diff += 360.0;
 
-            double RA_err = RA_diff * 3600;
+            double RA_err = RA_diff * cos(deg2rad(o.DEC)) * 3600.0;
             double DEC_err = (o.DEC - DEC_prop) * 3600;
 
             RA_res.push_back(RA_err);
@@ -1268,13 +1268,16 @@ double getErrorRADEC(Vec3 p0, Vec3 v0, std::vector<Observation> obs_all, std::un
     std::vector<double> RA_res = residuals.first;
     std::vector<double> DEC_res = residuals.second;
 
-    double err_val = 0;
-    for (int iter = 0; iter < RA_res.size(); iter++)
+    double err_sq_sum = 0;
+    int N = RA_res.size();
+
+    for (int i = 0; i < N; i++)
     {
-        err_val += RA_res[iter] * RA_res[iter] + DEC_res[iter] * DEC_res[iter];
+        err_sq_sum += RA_res[i] * RA_res[i] + DEC_res[i] * DEC_res[i];
     }
 
-    return err_val;
+    double rms = std::sqrt(err_sq_sum / (2.0 * N));
+    return rms;
 }
 
 // feed apparent position to this function
@@ -1377,8 +1380,8 @@ std::vector<double> computeGradient(Vec3 p0, Vec3 v0, std::vector<Observation> o
     double err0 = getErrorRADEC(p0, v0, obs_all, obscode_map);
     std::vector<double> grad = { 0, 0, 0, 0, 0, 0 };
 
-    double eps_vel = 1;
-    double eps_pos = 1;
+    double eps_vel = 1e-6;
+    double eps_pos = 1e-2;
 
     grad[0] = (getErrorRADEC(p0, v0 + Vec3(1, 0, 0) * eps_vel, obs_all, obscode_map) - err0) / eps_vel;
     grad[1] = (getErrorRADEC(p0, v0 + Vec3(0, 1, 0) * eps_vel, obs_all, obscode_map) - err0) / eps_vel;
@@ -1393,7 +1396,7 @@ std::vector<double> computeGradient(Vec3 p0, Vec3 v0, std::vector<Observation> o
 
 std::vector<std::array<double, 6>> computeJacobian(Vec3 p0, Vec3 v0, std::vector<Observation> obs_all,
     std::unordered_map<std::string, Observatory>& obscode_map,
-    double eps_v = 1e-2, double eps_p = 1e3)
+    double eps_v = 1e-6, double eps_p = 1e-2)
 {
     int N = obs_all.size();
     std::vector<std::array<double, 6>> J(2 * N);  // 2 residuals per observation
@@ -1556,7 +1559,7 @@ std::vector<Vec3> determineOrbit(std::vector<Observation> obs_all, std::unordere
         // check current error
         err_val = getErrorRADEC(p0, v0, obs_all, obscode_map);
 
-        if (err_val < 10)
+        if (err_val < 1e-6)
         {
             good_fit = true;
             break;
@@ -1908,7 +1911,7 @@ void printHelpMsg()
 
 int main(int argc, char* argv[])
 {
-    std::cout << "MPFT v0.7.0\n\n";
+    std::cout << "MPFT v0.8.0\n\n";
 
     // default parameters
     std::string obs_path = "primary.obs";
