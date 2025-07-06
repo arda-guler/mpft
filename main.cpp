@@ -1,7 +1,6 @@
 #include <iostream>
 #include <string>
 #include <array>
-#include <windows.h>
 #include <vector>
 #include <algorithm>
 #include <ctime>
@@ -10,6 +9,14 @@
 #include <iomanip>
 #include <unordered_map>
 #include <algorithm>
+#include <utility>
+
+#ifdef _WIN32
+#include <windows.h>
+#else
+#include <dirent.h>
+#include <sys/stat.h>
+#endif
 
 extern "C"
 {
@@ -281,6 +288,7 @@ using StateMatrix = std::array<std::array<std::array<double, 3>, 2>, 9>; // I do
 // --- --- --- MISC UTILS --- --- --- [START]
 void loadAllKernels(const std::string& directory)
 {
+#ifdef _WIN32
     std::string search_path = directory + "\\*.*";
     WIN32_FIND_DATAA fd;
     HANDLE hFind = ::FindFirstFileA(search_path.c_str(), &fd);
@@ -299,6 +307,32 @@ void loadAllKernels(const std::string& directory)
     } while (::FindNextFileA(hFind, &fd));
 
     ::FindClose(hFind);
+#else
+    DIR* dir = opendir(directory.c_str());
+    if (!dir) {
+        std::cerr << "Unable to open directory: " << directory << '\n';
+        return;
+    }
+
+    struct dirent* entry;
+    while ((entry = readdir(dir)) != NULL) {
+        std::string filename = entry->d_name;
+
+        // Skip "." and ".."
+        if (filename == "." || filename == "..") {
+            continue;
+        }
+
+        std::string filepath = directory + "/" + filename;
+
+        struct stat path_stat;
+        if (stat(filepath.c_str(), &path_stat) == 0 && S_ISREG(path_stat.st_mode)) {
+            furnsh_c(filepath.c_str());
+        }
+    }
+
+    closedir(dir);
+#endif
 }
 
 std::string trim(const std::string& str) // trim trailing/leading whitespace, nothing fancy, stole it from somewhere
@@ -308,7 +342,8 @@ std::string trim(const std::string& str) // trim trailing/leading whitespace, no
     return (start == std::string::npos) ? "" : str.substr(start, end - start + 1);
 }
 
-int digitsBeforeDecimal(double value) {
+int digitsBeforeDecimal(double value) 
+{
     if (value == 0.0) return 1;
     value = std::fabs(value); // Make it positive
     return static_cast<int>(std::floor(std::log10(value))) + 1;
@@ -324,7 +359,8 @@ SpiceDouble JDToEt(double JD)
     return (JD - 2451545.0) * 86400.0;
 }
 
-std::string alignDecimal(const std::string& prefix, double value, int precision = 5) {
+std::string alignDecimal(const std::string& prefix, double value, int precision = 5) 
+{
     std::ostringstream oss;
 
     // Width for just the number, not including the prefix
@@ -343,6 +379,35 @@ std::string alignDecimal(const std::string& prefix, double value, int precision 
 
     oss << num_str;
     return oss.str();
+}
+
+// use this to pick two initial observations for initial guess
+std::pair<int, int> findFarthestPairWithin30Days(const std::vector<double>& sorted_dates) 
+{
+    const double MAX_DIFF = 30.0 * 86400.0;
+
+    int best_i = -1;
+    int best_j = -1;
+    double max_sep = -1.0;
+
+    int j = 0;
+    for (int i = 0; i < sorted_dates.size(); ++i) 
+    {
+        // move j forward as long as difference is within limit
+        while (j < sorted_dates.size() && sorted_dates[j] - sorted_dates[i] <= MAX_DIFF) 
+        {
+            double sep = sorted_dates[j] - sorted_dates[i];
+            if (sep > max_sep) 
+            {
+                max_sep = sep;
+                best_i = i;
+                best_j = j;
+            }
+            ++j;
+        }
+    }
+
+    return { best_i, best_j }; // indices of sorted_dates
 }
 
 // this is the fun and simpler part of the equation
@@ -481,7 +546,8 @@ std::vector<double> cartezian2spherical(Vec3 v)
     return std::vector<double> {RA, DEC};
 }
 
-std::string RATohms(double ra_deg) {
+std::string RATohms(double ra_deg) 
+{
     double total_hours = ra_deg / 15.0;
     int hours = static_cast<int>(total_hours);
     double remainder_minutes = (total_hours - hours) * 60.0;
@@ -495,7 +561,8 @@ std::string RATohms(double ra_deg) {
     return oss.str();
 }
 
-std::string DECToDms(double dec_deg) {
+std::string DECToDms(double dec_deg) 
+{
     char sign = (dec_deg >= 0) ? '+' : '-';
     double abs_deg = std::fabs(dec_deg);
     int degrees = static_cast<int>(abs_deg);
@@ -524,7 +591,8 @@ void printOrbitalElements(std::vector<double> orbel)
     std::cout << "a: " << orbel[0] / AU << " e: " << orbel[1] << " i: " << orbel[2] << " Node: " << orbel[3] << " Peri: " << orbel[4] << " M: " << orbel[6] << "\n";
 }
 
-std::vector<double> flattenResiduals(const std::pair<std::vector<double>, std::vector<double>>& residual_pair) {
+std::vector<double> flattenResiduals(const std::pair<std::vector<double>, std::vector<double>>& residual_pair) 
+{
     const std::vector<double>& ra_res = residual_pair.first;
     const std::vector<double>& dec_res = residual_pair.second;
     std::vector<double> flat;
@@ -580,23 +648,28 @@ std::vector<Observatory> readObsCodes(const std::string& filepath = "data/ObsCod
     return obscodes;
 }
 
-std::vector<Observation> readObsFile(const std::string& filename = "primary.obs") {
+std::vector<Observation> readObsFile(const std::string& filename = "primary.obs") 
+{
     std::cout << "Reading observations file: " << filename << " ... " << std::flush;
     std::vector<Observation> observations;
 
     std::ifstream infile(filename);
-    if (!infile.is_open()) {
+    if (!infile.is_open()) 
+    {
         std::cerr << "Cannot open file: " << filename << "\n";
         return observations;
     }
 
     std::string line;
-    while (std::getline(infile, line)) {
-        try {
+    while (std::getline(infile, line)) 
+    {
+        try 
+        {
             Observation obs(line);
             observations.push_back(obs);
         }
-        catch (...) {
+        catch (...) 
+        {
             // Could not parse line, skip
         }
     }
@@ -980,6 +1053,48 @@ Vec3 guessCircularV0(Vec3 p0, std::vector<Observation> obs_all, std::unordered_m
     return v0;
 }
 
+// this guesses an initial velocity by trying out several Heliocentric radial velocities
+Vec3 guessHelioRV0(Vec3 p0, Observation o0, Observation o1, double dR, std::vector<Observation> obs_all, std::unordered_map<std::string, Observatory>& obscode_map)
+{
+    double r = p0.mag();
+
+    SpiceDouble delta_t = o1.et - o0.et;
+    double r2 = r + dR * delta_t;
+
+    // We find a heliocentric distance, then adjust it by the average radial velocity we assumed
+    Vec3 u = Vec3(o1.RA, o1.DEC);
+    Vec3 o = getObserverPos(obscode_map[o1.obs_code], o1.et);
+
+    double u_dot_oc = u.dot(o);
+    double o_mag = o.mag();
+
+    double disc = u_dot_oc * u_dot_oc - (o_mag * o_mag - r2 * r2);
+    double d_1 = -u_dot_oc + sqrt(disc);
+    double d_2 = -u_dot_oc - sqrt(disc);
+
+    double d = d_1;
+
+    if (d_1 < 0)
+    {
+        d = d_2;
+    }
+
+    Vec3 p1 = o + u * d; // assumed position at second observation
+
+    // now we find velocity
+    // Bill Gray (author of find_orb and astcheck) has a good explanation for what I'm doing so I won't bother repeating here
+    // https://www.projectpluto.com/herget.htm
+    Vec3 p_mid = (p0 + p1) * 0.5;
+
+    // get an acceleration guess at midpoint
+    double mu = 1.3271244004193938E+11; // Sun standrad gravitational parameter
+    Vec3 a_mid = p_mid.normalized() * (-mu) / (((r + r2) / 2) * ((r + r2) / 2));
+
+    // time it takes to go from observation 1 to 2
+    Vec3 v0 = (p1 - p0) / delta_t - a_mid * delta_t / 2;
+    return v0;
+}
+
 // get true state vector at observation time given apparent position
 std::vector<Vec3> computeTrueStateGeocentric(Vec3 pa, Vec3 va, SpiceDouble et_obs,  double tol = 1, int MAXITER = 5)
 {
@@ -1336,6 +1451,77 @@ std::pair<double, double> computePhaseAndElongation(Vec3 pa, SpiceDouble et, Obs
     return { phase_angle_deg, elongation_deg };
 }
 
+/*
+std::vector<Vec3> initialGuess(std::vector<Observation> obs_all, std::unordered_map<std::string, Observatory>& obscode_map, double R1,
+    int idx_o1, int idx_o2)
+{
+    Observation o1 = obs_all[idx_o1];
+    Observation o2 = obs_all[idx_o2];
+
+    double best_R = 2.0 * AU; // default-ish value
+    double best_dR = 0;
+
+    if (R1 < 0)
+    {
+        // test for best fitting observer - object distance
+        double R1_ts[63] = { 0.1 * AU, 0.2 * AU, 0.3 * AU, 0.5 * AU, 0.75 * AU, 1 * AU,
+                            1.25 * AU, 1.5 * AU, 1.75 * AU, 2 * AU, 2.25 * AU, 2.5 * AU,
+                            2.75 * AU, 3 * AU, 3.25 * AU, 3.5 * AU, 3.75 * AU, 4 * AU,
+                            5 * AU, 6 * AU, 7 * AU, 8 * AU, 9 * AU, 10 * AU, 11 * AU, 12 * AU,
+                            13 * AU, 14 * AU, 15 * AU, 16 * AU, 18 * AU, 20 * AU, 22 * AU, 24 * AU,
+                            26 * AU, 28 * AU, 29 * AU, 30 * AU, 31 * AU, 32 * AU, 33 * AU, 34 * AU,
+                            35 * AU, 36 * AU, 37 * AU, 38 * AU, 39 * AU, 40 * AU, 41 * AU, 42 * AU,
+                            43 * AU, 44 * AU, 45 * AU, 46 * AU, 47 * AU, 48 * AU, 49 * AU, 50 * AU,
+                            51 * AU, 52 * AU, 53 * AU, 54 * AU, 55 * AU };
+
+        double dRs[29] = { 0.0, 0.02, 0.04, 0.06, 0.08, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.8, 1.0, 1.2, 1.4,
+                          1.6, 1.8, 2.0, 3.0, 4.0, 5.0, 6.0, 8.0, 10.0, 12.0, 14.0, 16.0, 18.0, 20.0 };
+
+        double R_err_prev = 1E+15; // arbitrary large number
+
+        for (int idx_Rt = 0; idx_Rt < 63; idx_Rt++)
+        {
+            double R1_t = R1_ts[idx_Rt];
+            Vec3 p0 = getObserverPos(obscode_map[o1.obs_code], o1.et) + Vec3(o1.RA, o1.DEC) * R1_t;
+            // Vec3 v0 = guessCircularV0(p0, obs_all, obscode_map);
+
+            for (int idx_dR = 0; idx_dR < 29 * 2; idx_dR++)
+            {
+                double dR = dRs[idx_dR / 2];
+
+                if (idx_dR % 2 == 1)
+                {
+                    dR = -dR;
+                }
+                
+                Vec3 v0 = guessHelioRV0(p0, o1, o2, dR, obs_all, obscode_map);
+
+                // check current error
+                double err_val = getErrorRADEC(p0, v0, obs_all, obscode_map, true);
+
+                if (err_val < R_err_prev)
+                {
+                    best_R = R1_t;
+                    best_dR = dR;
+                    R_err_prev = err_val;
+                }
+            }
+        }
+    }
+    else
+    {
+        best_R = R1;
+        best_dR = 0;
+    }
+
+    Vec3 p0 = getObserverPos(obscode_map[o1.obs_code], o1.et) + Vec3(o1.RA, o1.DEC) * best_R;
+    Vec3 v0 = guessHelioRV0(p0, o1, o2, best_dR, obs_all, obscode_map);
+
+    return std::vector<Vec3> {p0, v0};
+}
+*/
+
+// tihs version of this function is still better than the above
 std::vector<Vec3> initialGuess(std::vector<Observation> obs_all, std::unordered_map<std::string, Observatory>& obscode_map, double R1)
 {
     Observation o1 = obs_all[0];
@@ -1529,13 +1715,17 @@ std::vector<Vec3> determineOrbit(std::vector<Observation> obs_all, std::unordere
 {
     std::cout << "Orbit determination...\n";
 
-    Observation o1 = obs_all[0];
-    Observation o2 = obs_all[(int)(obs_all.size() / 2)];
-    Observation o3 = obs_all[obs_all.size() - 1];
+    std::vector<SpiceDouble> all_dates;
+    for (int idx_o = 0; idx_o < obs_all.size(); idx_o++)
+    {
+        all_dates.push_back(obs_all[idx_o].et);
+    }
 
-    SpiceDouble date_init = o1.et;
-    SpiceDouble date_final = o2.et;
-    SpiceDouble date_check = o3.et;
+    std::pair<int, int> fitobs_idx = findFarthestPairWithin30Days(all_dates);
+    int idx_o1 = fitobs_idx.first;
+    int idx_o2 = fitobs_idx.second;
+
+    Observation o1 = obs_all[idx_o1];
 
     std::vector<Vec3> initialGuessSv = initialGuess(obs_all, obscode_map, R1);
     Vec3 p0 = initialGuessSv[0];
@@ -1585,11 +1775,11 @@ std::vector<Vec3> determineOrbit(std::vector<Observation> obs_all, std::unordere
         {
             v0 = v0_new;
             p0 = p0_new;
-            adjust_factor *= 1.8;
+            adjust_factor *= 1.2;
         }
         else
         {
-            adjust_factor *= 0.1;
+            adjust_factor *= 0.5;
         }
 
         retry_count += 1;
@@ -1891,30 +2081,49 @@ void printQuasiMPEC(std::vector<double> orbital_elements,
 void printHelpMsg()
 {
     std::cout << " === MPFT HELP ===\n";
-    std::cout << "MPFT is an orbit determination software for minor planets in heliocentric orbit.\n\n";
+    std::cout << "MPFT is an orbit determination software for minor planets in Heliocentric orbit.\n";
+    std::cout << "It tries to find the state vector that minimizes the RA-DEC RMS error for all observations, "; 
+    std::cout << "then calculates the orbital elements; eventually generating a Quasi-MPEC and a JSON file.\n\n";
+
     std::cout << "It requires SPICE kernels, an observation file in Minor Planet Center's 80-column format, ";
     std::cout << "and an ObsCodes file which holds the observatory codes used by the MPC.\n\n";
-    std::cout << "The minimal invocation is merely 'mpft' - this assumes default locations for all files, which are:\n\n";
-    std::cout << "SPICE Files:\n";
-    std::cout << "data/SPICE/naif0012.tls\n";
-    std::cout << "data/SPICE/de440.bsp\n";
-    std::cout << "data/SPICE/pck00011.tpc\n";
-    std::cout << "data/SPICE/earth_000101_250316_241218.bpc\n\n";
-    std::cout << "Minor Planet Center Observatory Codes:\n";
-    std::cout << "data/ObsCodes.dat\n\n";
-    std::cout << "Your input observations (astrometry) in Obs80 format (MPC's 80-column format):\n";
-    std::cout << "primary.obs\n\n";
-    std::cout << "Optional arguments are as follows (can be entered in any order):\n\n";
-    std::cout << "-obs <Obs80_input_file> -obscode <obscode_file> -spice <spice_folder_path> -R <initial_object_dist_to_observer_guess (AU)> -maxiter <max_orbit_refinement_iterations> -out <output_file_path> -json <output_json_path>\n\n";
-    std::cout << "If an initial distance guess is not given, the program tries several guesses and tries to pick the best one.\n";
-    std::cout << "Default number of maximum iterations is 20. Output file will be named quasi-MPEC.txt by default.\n\n";
+
+    std::cout << "The minimal invocation is merely 'mpft' - it assumes the following defaults:\n";
+    std::cout << "    Observations (Obs80) filename: primary.obs\n";
+    std::cout << "    ObsCodes file: data/ObsCodes.dat\n";
+    std::cout << "    SPICE kernels folder: data/SPICE/\n";
+    std::cout << "    Quasi-MPEC output filename: quasi-MPEC.txt\n";
+    std::cout << "    Object JSON output filename: mp.json\n";
+    std::cout << "    Num. of orbit refinement iterations: 20\n";
+    std::cout << "    Initial distance guess: -1 (Auto)\n\n";
+
+    std::cout << "You can adjust each of these settings by using the following arguments:\n";
+    std::cout << "    -obs: Observations (Obs80) filepath\n";
+    std::cout << "    -obscode: MPC ObsCodes file\n";
+    std::cout << "    -spice: path to folder including SPICE kernels to use\n";
+    std::cout << "    -out: Quasi-MPEC output filepath\n";
+    std::cout << "    -json: Object JSON output filepath\n";
+    std::cout << "    -maxiter: Max. number of orbit refinement iterations\n";
+    std::cout << "    -R: initial distance to object guess (in AU)\n";
+
+    std::cout << "If an initial distance guess is not given (or a negative number is given), the program tries to guess it by itself automatically.\n\n";
+    
+    std::cout << "SPICE kernels can be obtained from NAIF --> https://naif.jpl.nasa.gov/pub/naif/generic_kernels/\n";
+    std::cout << "You can get whichever ones are most suitable, but please ensure you have at least the planet ephemerides kernel, a leapseconds kernel, "
+        << "a generic text PCK and a binary Earth PCK.\n If you do not know what to get, you can get the following:\n";
+    std::cout << "    de440.bsp (https://naif.jpl.nasa.gov/pub/naif/generic_kernels/spk/planets/de440.bsp)\n";
+    std::cout << "    naif0012.tls (https://naif.jpl.nasa.gov/pub/naif/generic_kernels/lsk/naif0012.tls)\n";
+    std::cout << "    pck00011.tpc (https://naif.jpl.nasa.gov/pub/naif/generic_kernels/pck/pck00011.tpc)\n";
+    std::cout << "    earth_1962_240827_2124_combined.bpc (https://naif.jpl.nasa.gov/pub/naif/generic_kernels/pck/earth_1962_240827_2124_combined.bpc)\n";
+    std::cout << "        (the last one might get updated often, just pick one that looks like it)\n\n";
+
     std::cout << "MPFT was developed by H. A. Guler.\n\n";
     std::cout << "MPFT is licensed under GNU General Public License version 2.0 (GPL-2.0 License)\n\n";
 }
 
 int main(int argc, char* argv[])
 {
-    std::cout << "MPFT v0.8.0\n\n";
+    std::cout << "MPFT v0.9.0\n\n";
 
     // default parameters
     std::string obs_path = "primary.obs";
